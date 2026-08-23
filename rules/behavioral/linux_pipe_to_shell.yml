@@ -1,0 +1,22 @@
+title: Linux Curl or Wget Piped to Shell
+id: 5272a21b-432b-55b7-aca3-a5cff4a52073
+status: stable
+description: Detects remote script fetched and piped directly into a shell interpreter, common dropper pattern on Linux.
+logsource:
+    category: process_creation
+detection:
+    selection_fetch:
+        CommandLine|contains:
+            - 'curl '
+            - 'wget '
+    selection_exec:
+        CommandLine|contains:
+            - '| sh'
+            - '|sh'
+            - '| bash'
+            - '|bash'
+    condition: selection_fetch and selection_exec
+tags:
+    - attack.execution
+    - attack.t1059.004
+level: high

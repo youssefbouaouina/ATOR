@@ -1,0 +1,15 @@
+{
+  "type": "bundle",
+  "id": "bundle--750f9320-621b-5024-800a-5223a7c2f9d2",
+  "objects": [
+    {
+      "type": "identity",
+      "spec_version": "2.1",
+      "id": "identity--5ff2f80b-4de2-5eab-ba62-8d7409639d3c",
+      "created": "2026-08-23T07:09:46.820Z",
+      "modified": "2026-08-23T07:09:46.820Z",
+      "name": "ATOR DFIR Framework",
+      "identity_class": "system"
+    }
+  ]
+}

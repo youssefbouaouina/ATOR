@@ -1,0 +1,30 @@
+title: Suspicious Reverse Shell Destination Ports
+id: be8ae040-2c18-5361-b702-fb191a02f3fc
+status: stable
+description: Detects scripting or shell processes connecting to ports commonly used by reverse shells and public C2 frameworks.
+logsource:
+    category: network_connection
+detection:
+    selection_process:
+        process_name|endswith:
+            - 'powershell.exe'
+            - 'cmd.exe'
+            - 'bash'
+            - 'sh'
+            - 'python'
+            - 'python3'
+            - 'nc'
+            - 'ncat'
+            - 'nc.exe'
+    selection_ports:
+        remote_port:
+            - 4444
+            - 5555
+            - 1337
+            - 9001
+            - 31337
+    condition: selection_process and selection_ports
+tags:
+    - attack.command-and-control
+    - attack.t1071.001
+level: critical

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<h4>Investigation Reports</h4>
+<p class="text-muted small">PDF reports include verdict-first summary, risk level, SoC attack chain, color-coded ATT&amp;CK matrix and evidence manifest integrity annex.</p>
+<table class="table table-hover data bg-white">
+  <thead><tr><th>Host</th><th>OS</th><th>Detections</th><th>PDF Report</th><th>JSON</th><th>STIX 2.1</th></tr></thead>
+  <tbody>
+  {% for h in hosts %}
+    <tr>
+      <td><b>{{ h.hostname }}</b></td><td><span class="badge bg-dark">{{ h.os_type }}</span></td>
+      <td>{{ h.detection_count }}</td>
+      <td><a class="btn btn-outline-primary btn-sm" href="/api/v1/export/report/{{ h.id }}.pdf">Download PDF</a></td>
+      <td><a class="btn btn-outline-secondary btn-sm" href="/api/v1/export/report/{{ h.id }}.json">JSON</a></td>
+      <td><a class="btn btn-outline-secondary btn-sm" href="/api/v1/export/stix/{{ h.id }}.json">STIX</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="text-center text-muted py-4">No hosts enrolled yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<div class="card mt-3">
+  <div class="card-header">Fleet-wide exports</div>
+  <div class="card-body d-flex gap-2">
+    <a class="btn btn-success" href="/api/v1/export/navigator.json">ATT&amp;CK Navigator layer (detection coverage)</a>
+    <a class="btn btn-outline-dark" href="https://mitre-attack.github.io/attack-navigator/" target="_blank">Open ATT&amp;CK Navigator &nearr;</a>
+  </div>
+</div>
+{% endblock %}

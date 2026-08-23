@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Investigation{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4>Investigation</h4>
+  <form method="get" class="d-flex gap-2">
+    <select name="host_id" class="form-select form-select-sm">
+      {% for h in hosts %}<option value="{{ h.id }}" {{ 'selected' if h.id == selected }}>{{ h.hostname }} ({{ h.os_type }})</option>{% endfor %}
+    </select>
+    <button class="btn btn-primary btn-sm">Load</button>
+  </form>
+</div>
+
+{% if soc.chain %}
+<div class="card mb-4"><div class="card-header">Attack chain (Source of Compromise)</div><div class="card-body">
+  {% for step in soc.chain %}
+    <span class="chain-step" title="{{ step.display }}: {{ step.techniques | map(attribute='name') | join(', ') }}">
+      {{ step.display }} &middot; {{ step.techniques | length }} tech</span>
+  {% endfor %}
+  {% for t in soc.unplaced %}<span class="chain-step bg-secondary">{{ t.name }}</span>{% endfor %}
+</div></div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card mb-4">
+      <div class="card-header">Unified timeline ({{ timeline.total }} events, {{ timeline.skew|length }} skew flags)</div>
+      <div class="card-body p-0" style="max-height:480px; overflow-y:auto;">
+        <table class="table table-sm table-striped mb-0 data">
+          <thead><tr><th>Time (UTC)</th><th>Kind</th><th>Title</th><th>Detail</th></tr></thead>
+          <tbody>
+          {% for e in timeline.events %}
+            <tr><td class="mono text-nowrap">{{ e.ts or '(no ts)' }}</td>
+                <td><span class="badge bg-dark">{{ e.kind }}</span></td>
+                <td>{{ e.title }}</td><td class="mono text-truncate" style="max-width:260px;" title="{{ e.detail }}">{{ e.detail }}</td></tr>
+          {% else %}
+            <tr><td colspan="4" class="text-center text-muted py-4">Select a host with data.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">Detections for this host</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 data">
+          <thead><tr><th>Time</th><th>Rule</th><th>MITRE</th><th>Name</th><th>Sev</th></tr></thead>
+          <tbody>
+          {% for d in detections %}
+            <tr><td class="mono">{{ d.detected_at_utc }}</td><td>{{ d.rule_name[:40] }}</td>
+                <td class="mono">{{ d.technique_id or '-' }}</td><td>{{ d.technique_name or '-' }}</td>
+                <td><span class="badge badge-{{ d.severity }}">{{ d.severity }}</span></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card mb-4">
+      <div class="card-header">Process tree (latest collection {{ tree.collection_id and tree.collection_id[:8] or '' }}...)</div>
+      <div class="card-body p-0" style="max-height:420px; overflow-y:auto;">
+        <table class="table table-sm mb-0 data mono">
+          <tbody>
+          {% set by_parent = {} %}
+          {% for n in tree.nodes %}{% set _ = by_parent.setdefault(n.ppid, []).append(n) %}{% endfor %}
+          {% for n in tree.nodes %}
+            <tr><td>{{ '&nbsp;&nbsp;'*0 }}{{ n.pid }} &larr; {{ n.ppid }} &nbsp; <b>{{ n.name }}</b></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">Time skew anomalies</div>
+      <div class="card-body small">
+        {% if timeline.skew %}
+          <ul class="mb-0">{% for s in timeline.skew[:10] %}<li class="mono">{{ s.ref }} - {{ s.skew_days }} days off baseline</li>{% endfor %}</ul>
+        {% else %}<span class="text-muted">None detected.</span>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

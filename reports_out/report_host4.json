@@ -1,0 +1,40 @@
+{
+  "host": {
+    "id": 4,
+    "client_id": "demo-docker-host-01",
+    "hostname": "DOCKER-HOST-01",
+    "os_type": "docker_host",
+    "docker_engine_flag": 0,
+    "api_key_hash": "n/a",
+    "agent_version": null,
+    "enrolled_at_utc": "2026-08-23T07:08:14+00:00",
+    "last_seen_utc": "2026-08-23T07:08:14+00:00",
+    "is_active": 1
+  },
+  "risk": {
+    "counts": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "score": 0,
+    "verdict": "NO DETECTIONS",
+    "risk_level": "CLEAN",
+    "attack_stages_observed": 0
+  },
+  "chain": {
+    "host_id": 4,
+    "chain": [],
+    "unplaced": []
+  },
+  "timeline": {
+    "events": [],
+    "total": 0,
+    "skew": []
+  },
+  "detections": [],
+  "ioc_hits": [],
+  "manifests": [],
+  "generated_at_utc": "2026-08-23T07:09:46+00:00"
+}

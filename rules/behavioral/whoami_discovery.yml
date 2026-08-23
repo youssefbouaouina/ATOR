@@ -1,0 +1,19 @@
+title: Account Discovery via Whoami
+id: 44cf288a-45fa-5949-be6a-ce576c1a7727
+status: stable
+description: Detects whoami execution with privilege or group enumeration flags.
+logsource:
+    category: process_creation
+detection:
+    selection:
+        Image|endswith:
+            - '\whoami.exe'
+        CommandLine|contains:
+            - '/priv'
+            - '/groups'
+            - '/all'
+    condition: selection
+tags:
+    - attack.discovery
+    - attack.t1033
+level: low

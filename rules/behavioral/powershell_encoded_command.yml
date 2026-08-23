@@ -1,0 +1,21 @@
+title: PowerShell Encoded Command Execution
+id: 5b2b22fa-7972-50a9-97ac-07a097d67e49
+status: stable
+description: Detects PowerShell launched with encoded command flags, common in obfuscated malware and C2 loaders.
+logsource:
+    category: process_creation
+detection:
+    selection_img:
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+    selection_flags:
+        CommandLine|contains:
+            - ' -enc '
+            - ' -EncodedCommand'
+            - '-w hidden -enc'
+    condition: selection_img and selection_flags
+tags:
+    - attack.execution
+    - attack.t1059.001
+level: high

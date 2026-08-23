@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Endpoints{% endblock %}
+{% block content %}
+<h4>Endpoints</h4>
+<div class="card mb-4"><div class="card-header">Agent deploy one-liner</div><div class="card-body mono small bg-light">
+python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span class="text-muted">(server_url + api_key stored in agent/config.json)</span>
+</div></div>
+<table class="table table-hover data bg-white">
+  <thead><tr><th>ID</th><th>Client ID</th><th>Hostname</th><th>OS</th><th>Docker</th><th>Last seen (UTC)</th><th>Detections</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for h in hosts %}
+    <tr>
+      <td>{{ h.id }}</td><td class="mono">{{ h.client_id }}</td><td><b>{{ h.hostname }}</b></td>
+      <td><span class="badge bg-dark">{{ h.os_type }}</span></td>
+      <td>{{ 'yes' if h.docker_engine_flag else '-' }}</td>
+      <td class="mono">{{ h.last_seen_utc or 'never' }}</td>
+      <td>{{ h.detection_count }}</td>
+      <td>{% if h.is_active %}<span class="badge bg-success">active</span>{% else %}<span class="badge bg-danger">revoked</span>{% endif %}</td>
+      <td>
+        {% if h.is_active %}
+        <form method="post" action="/ui/endpoints/{{ h.id }}/revoke" class="d-inline"
+              onsubmit="return confirm('Revoke API key for {{ h.hostname }}?')">
+          <button class="btn btn-outline-danger btn-sm">Revoke</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="text-center text-muted py-4">No endpoints enrolled.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

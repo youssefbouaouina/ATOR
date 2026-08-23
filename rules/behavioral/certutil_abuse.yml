@@ -1,0 +1,20 @@
+title: Certutil File Download or Encoding Abuse
+id: bf9382aa-3d03-5f83-bff7-0897b2528a5b
+status: stable
+description: Detects certutil used to download files or encode payloads (LOLBin abuse).
+logsource:
+    category: process_creation
+detection:
+    selection:
+        Image|endswith: '\certutil.exe'
+        CommandLine|contains:
+            - 'urlcache'
+            - 'verifyctl'
+            - '-decode '
+            - ' -encode '
+    condition: selection
+tags:
+    - attack.command-and-control
+    - attack.defense-evasion
+    - attack.t1105
+level: high

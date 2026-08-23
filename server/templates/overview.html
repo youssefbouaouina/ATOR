@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-2"><div class="card card-metric sev-critical"><div class="card-body"><h3>{{ counts.critical }}</h3><span class="badge badge-critical">Critical</span></div></div></div>
+  <div class="col-md-2"><div class="card card-metric sev-high"><div class="card-body"><h3>{{ counts.high }}</h3><span class="badge badge-high">High</span></div></div></div>
+  <div class="col-md-2"><div class="card card-metric sev-medium"><div class="card-body"><h3>{{ counts.medium }}</h3><span class="badge badge-medium">Medium</span></div></div></div>
+  <div class="col-md-2"><div class="card card-metric sev-low"><div class="card-body"><h3>{{ counts.low }}</h3><span class="badge badge-low">Low</span></div></div></div>
+  <div class="col-md-2"><div class="card card-metric"><div class="card-body"><h3>{{ hosts }}</h3><span class="text-muted">Active endpoints</span></div></div></div>
+  <div class="col-md-2"><div class="card card-metric"><div class="card-body"><h3>{{ manifests }}</h3><span class="text-muted">Evidence collections</span></div></div></div>
+</div>
+<div class="row g-4">
+  <div class="col-lg-5">
+    <div class="card"><div class="card-header">Detections by severity</div><div class="card-body"><canvas id="sevChart" height="220"></canvas></div></div>
+  </div>
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header">Recent detections feed</div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover mb-0 data">
+          <thead><tr><th>Time (UTC)</th><th>Host</th><th>Rule</th><th>Type</th><th>Severity</th><th>MITRE</th></tr></thead>
+          <tbody>
+          {% for d in recent %}
+            <tr><td class="mono">{{ d.detected_at_utc }}</td><td>{{ d.hostname }}</td>
+                <td>{{ d.rule_name }}</td><td><span class="badge bg-secondary">{{ d.rule_type }}</span></td>
+                <td><span class="badge badge-{{ d.severity }}">{{ d.severity }}</span></td>
+                <td class="mono">{{ d.technique_id or '-' }}</td></tr>
+          {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-4">No detections yet - run an agent collection or the E2E simulation.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+new Chart(document.getElementById('sevChart'), {
+  type: 'doughnut',
+  data: { labels: ['Critical','High','Medium','Low'],
+    datasets: [{ data: [{{ counts.critical }},{{ counts.high }},{{ counts.medium }},{{ counts.low }}],
+      backgroundColor: ['#c0392b','#d35400','#f39c12','#27ae60'] }] },
+  options: { plugins: { legend: { position: 'bottom' } } }
+});
+</script>
+{% endblock %}

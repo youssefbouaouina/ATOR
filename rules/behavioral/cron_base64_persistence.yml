@@ -1,0 +1,21 @@
+title: Base64 Cron Persistence Modification
+id: eb944016-1d42-580d-8c5c-bdf3ec7c941e
+status: stable
+description: Detects crontab modification combined with base64 decoding, indicating obfuscated persistence on Linux.
+logsource:
+    category: process_creation
+detection:
+    selection_cron:
+        CommandLine|contains:
+            - 'crontab'
+            - '/etc/cron'
+    selection_b64:
+        CommandLine|contains:
+            - 'base64 -d'
+            - 'base64 --decode'
+            - '-d <<<'
+    condition: selection_cron and selection_b64
+tags:
+    - attack.persistence
+    - attack.t1053.003
+level: high

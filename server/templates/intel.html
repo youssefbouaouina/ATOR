@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Threat Intel{% endblock %}
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-5">
+    <h4>Threat Intel</h4>
+    <div class="card mb-3"><div class="card-header">Add watchlist IOC</div><div class="card-body">
+      <form method="post" action="/ui/iocs" class="row g-2">
+        <div class="col-4"><select name="ioc_type" class="form-select form-select-sm">
+          <option value="hash">SHA-256</option><option value="ip">IP</option><option value="domain">Domain</option>
+        </select></div>
+        <div class="col-6"><input name="value" class="form-control form-control-sm mono" placeholder="value" required></div>
+        <div class="col-2"><button class="btn btn-primary btn-sm w-100">Add</button></div>
+      </form>
+    </div></div>
+    <div class="card mb-3"><div class="card-header">Fleet pivot search</div><div class="card-body">
+      <form method="get" class="row g-2">
+        <div class="col-9"><input name="q" value="{{ q }}" class="form-control form-control-sm mono" placeholder="sha256 hash or IP or port"></div>
+        <div class="col-3"><button class="btn btn-dark btn-sm w-100">Search</button></div>
+      </form>
+    </div></div>
+    {% if results %}
+    <div class="card">
+      <div class="card-header">Results for <span class="mono">{{ results.query }}</span>
+        {% if results.known %}<span class="badge badge-critical">KNOWN IOC</span>{% endif %}</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 data mono">
+          <tbody>
+          {% for p in results.processes %}
+            <tr><td>{{ p.hostname }}</td><td>{{ p.name }}<br>{{ p.exe_path }}</td><td>{{ p.sha256[:24] }}...</td></tr>
+          {% endfor %}
+          {% for c in results.connections %}
+            <tr><td>{{ c.hostname }}</td><td>{{ c.process_name }}</td><td>{{ c.remote_ip }}:{{ c.remote_port }}</td></tr>
+          {% endfor %}
+          {% if not results.processes and not results.connections %}
+            <tr><td class="text-center text-muted py-3">No artifacts matched.</td></tr>
+          {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  <div class="col-lg-7">
+    <div class="card"><div class="card-header">IOC store ({{ iocs|length }} shown)</div><div class="card-body p-0">
+      <table class="table table-sm table-striped mb-0 data">
+        <thead><tr><th>Type</th><th>Value</th><th>Source</th><th>Description</th><th>Added</th></tr></thead>
+        <tbody>
+        {% for i in iocs %}
+          <tr><td><span class="badge bg-dark">{{ i.ioc_type }}</span></td><td class="mono">{{ i.value }}</td>
+              <td>{{ i.threat_source }}</td><td>{{ i.description or '-' }}</td><td class="mono small">{{ i.added_at_utc }}</td></tr>
+        {% else %}
+          <tr><td colspan="5" class="text-center text-muted py-4">IOC store empty - add indicators or import feeds.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div></div>
+  </div>
+</div>
+{% endblock %}

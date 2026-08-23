@@ -1,0 +1,1459 @@
+{
+  "host": {
+    "id": 1,
+    "client_id": "host-4a8c2881c47f376a",
+    "hostname": "ator-win10-host",
+    "os_type": "windows",
+    "docker_engine_flag": 0,
+    "api_key_hash": "84f9a2ab0b036bf85f45e33ebf42287f$39feb6a2cb8721e445f2047538ebcfc61fe24a2d3c13c2646939808308014743",
+    "agent_version": "1.0.0-e2e",
+    "enrolled_at_utc": "2026-08-23T07:10:58+00:00",
+    "last_seen_utc": "2026-08-23T07:11:15+00:00",
+    "is_active": 1
+  },
+  "risk": {
+    "counts": {
+      "critical": 4,
+      "high": 4,
+      "medium": 4,
+      "low": 4
+    },
+    "score": 156,
+    "verdict": "CONFIRMED COMPROMISE INDICATORS - MULTI-STAGE ATTACK CHAIN",
+    "risk_level": "CRITICAL",
+    "attack_stages_observed": 5
+  },
+  "chain": {
+    "host_id": 1,
+    "chain": [
+      {
+        "tactic": "execution",
+        "display": "Execution",
+        "order": 3,
+        "techniques": [
+          {
+            "id": "T1059.001",
+            "name": "PowerShell",
+            "hits": 4,
+            "times": [
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00"
+            ]
+          },
+          {
+            "id": "T1053.005",
+            "name": "Scheduled Task",
+            "hits": 4,
+            "times": [
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00"
+            ]
+          }
+        ],
+        "first_seen": "2026-08-23T07:11:15+00:00",
+        "last_seen": "2026-08-23T07:11:15+00:00"
+      },
+      {
+        "tactic": "persistence",
+        "display": "Persistence",
+        "order": 4,
+        "techniques": [
+          {
+            "id": "T1053.005",
+            "name": "Scheduled Task",
+            "hits": 4,
+            "times": [
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00"
+            ]
+          }
+        ],
+        "first_seen": "2026-08-23T07:11:15+00:00",
+        "last_seen": "2026-08-23T07:11:15+00:00"
+      },
+      {
+        "tactic": "privilege-escalation",
+        "display": "Privilege Escalation",
+        "order": 5,
+        "techniques": [
+          {
+            "id": "T1053.005",
+            "name": "Scheduled Task",
+            "hits": 4,
+            "times": [
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00"
+            ]
+          }
+        ],
+        "first_seen": "2026-08-23T07:11:15+00:00",
+        "last_seen": "2026-08-23T07:11:15+00:00"
+      },
+      {
+        "tactic": "discovery",
+        "display": "Discovery",
+        "order": 8,
+        "techniques": [
+          {
+            "id": "T1033",
+            "name": "System Owner/User Discovery",
+            "hits": 4,
+            "times": [
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00"
+            ]
+          }
+        ],
+        "first_seen": "2026-08-23T07:11:15+00:00",
+        "last_seen": "2026-08-23T07:11:15+00:00"
+      },
+      {
+        "tactic": "command-and-control",
+        "display": "Command And Control",
+        "order": 11,
+        "techniques": [
+          {
+            "id": "T1071.001",
+            "name": "Web Protocols",
+            "hits": 4,
+            "times": [
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00",
+              "2026-08-23T07:11:15+00:00"
+            ]
+          }
+        ],
+        "first_seen": "2026-08-23T07:11:15+00:00",
+        "last_seen": "2026-08-23T07:11:15+00:00"
+      }
+    ],
+    "unplaced": []
+  },
+  "timeline": {
+    "events": [
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "high",
+        "title": "[SIGMA] PowerShell Encoded Command Execution",
+        "detail": "{\"technique_id\": \"T1059.001\", \"summary\": {\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}}",
+        "ref": "detection:1",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "critical",
+        "title": "[SIGMA] Suspicious Reverse Shell Destination Ports",
+        "detail": "{\"technique_id\": \"T1071.001\", \"summary\": {\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}}",
+        "ref": "detection:2",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "medium",
+        "title": "[SIGMA] Scheduled Task Creation via Schtasks",
+        "detail": "{\"technique_id\": \"T1053.005\", \"summary\": {\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}}",
+        "ref": "detection:3",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "low",
+        "title": "[SIGMA] Account Discovery via Whoami",
+        "detail": "{\"technique_id\": \"T1033\", \"summary\": {\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}}",
+        "ref": "detection:4",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "high",
+        "title": "[SIGMA] PowerShell Encoded Command Execution",
+        "detail": "{\"technique_id\": \"T1059.001\", \"summary\": {\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}}",
+        "ref": "detection:6",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "critical",
+        "title": "[SIGMA] Suspicious Reverse Shell Destination Ports",
+        "detail": "{\"technique_id\": \"T1071.001\", \"summary\": {\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}}",
+        "ref": "detection:7",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "medium",
+        "title": "[SIGMA] Scheduled Task Creation via Schtasks",
+        "detail": "{\"technique_id\": \"T1053.005\", \"summary\": {\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}}",
+        "ref": "detection:9",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "low",
+        "title": "[SIGMA] Account Discovery via Whoami",
+        "detail": "{\"technique_id\": \"T1033\", \"summary\": {\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}}",
+        "ref": "detection:10",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "high",
+        "title": "[SIGMA] PowerShell Encoded Command Execution",
+        "detail": "{\"technique_id\": \"T1059.001\", \"summary\": {\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}}",
+        "ref": "detection:12",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "critical",
+        "title": "[SIGMA] Suspicious Reverse Shell Destination Ports",
+        "detail": "{\"technique_id\": \"T1071.001\", \"summary\": {\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}}",
+        "ref": "detection:13",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "medium",
+        "title": "[SIGMA] Scheduled Task Creation via Schtasks",
+        "detail": "{\"technique_id\": \"T1053.005\", \"summary\": {\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}}",
+        "ref": "detection:15",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "low",
+        "title": "[SIGMA] Account Discovery via Whoami",
+        "detail": "{\"technique_id\": \"T1033\", \"summary\": {\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}}",
+        "ref": "detection:16",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "high",
+        "title": "[SIGMA] PowerShell Encoded Command Execution",
+        "detail": "{\"technique_id\": \"T1059.001\", \"summary\": {\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}}",
+        "ref": "detection:18",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "critical",
+        "title": "[SIGMA] Suspicious Reverse Shell Destination Ports",
+        "detail": "{\"technique_id\": \"T1071.001\", \"summary\": {\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}}",
+        "ref": "detection:19",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "medium",
+        "title": "[SIGMA] Scheduled Task Creation via Schtasks",
+        "detail": "{\"technique_id\": \"T1053.005\", \"summary\": {\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}}",
+        "ref": "detection:21",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "detection",
+        "severity": "low",
+        "title": "[SIGMA] Account Discovery via Whoami",
+        "detail": "{\"technique_id\": \"T1033\", \"summary\": {\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}}",
+        "ref": "detection:22",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] SecurityHealth",
+        "detail": "%windir%\\system32\\SecurityHealthSystray.exe",
+        "ref": "persistence:1",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] Riot Vanguard",
+        "detail": "\"C:\\Program Files\\Riot Vanguard\\vgtray.exe\"",
+        "ref": "persistence:2",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] RtkAudUService",
+        "detail": "\"C:\\Windows\\System32\\RtkAudUService64.exe\" -background",
+        "ref": "persistence:3",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] msedge_cleanup_{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        "detail": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\151.0.4129.101\\Installer\\setup.exe\" --msedgewebview --delete-old-versions --system-level --verbose-logging --on-logon",
+        "ref": "persistence:4",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] msedge_cleanup_{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}",
+        "detail": "\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\151.0.4129.101\\Installer\\setup.exe\" --msedge --channel=stable --delete-old-versions --system-level --verbose-logging --on-logon",
+        "ref": "persistence:5",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] Steam",
+        "detail": "\"C:\\Program Files (x86)\\Steam\\steam.exe\" -silent",
+        "ref": "persistence:6",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] RiotClient",
+        "detail": "C:\\Riot Games\\Riot Client\\RiotClientServices.exe --launch-background-mode",
+        "ref": "persistence:7",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] Discord",
+        "detail": "\"C:\\Users\\SidikRoyale\\AppData\\Local\\Discord\\Update.exe\" --processStart Discord.exe --process-start-args \"--start-inactive\"",
+        "ref": "persistence:8",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] LenovoVantage",
+        "detail": "C:\\ProgramData\\Lenovo\\Vantage\\Addins\\LenovoCompanionAppAddin\\1.0.0.58\\LenovoVantage.exe",
+        "ref": "persistence:9",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] MicrosoftEdgeAutoLaunch_66860CF83333242B94CE24FD38E34A13",
+        "detail": "\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --win-session-start",
+        "ref": "persistence:10",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] Docker Desktop",
+        "detail": "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe",
+        "ref": "persistence:11",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] Application Restart #0",
+        "detail": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe  --component-updater=url-source=https://go-updater.brave.com/extensions --disable-domain-reliability --enable-distillability-service --enable-dom-distiller --lso-url=https://no-thanks.invalid --origin-trial-public-key=bYUKPJoPnCxeNvu72j4EmPuK7tr1PAC7SHh8ld9Mw3E=,fMS4mpO6buLQ/QMd+zJmxzty/VQ6B1EUZqoCU04zoRU= --variations-insecure-ser",
+        "ref": "persistence:12",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE registry_run] AtorUpdater",
+        "detail": "reg add HKCU\\...\\Run /v up /d evil.exe",
+        "ref": "persistence:620",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] 1394ohci",
+        "detail": "\\SystemRoot\\System32\\drivers\\1394ohci.sys",
+        "ref": "persistence:13",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AarSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k AarSvcGroup -p",
+        "ref": "persistence:14",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AarSvc_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k AarSvcGroup -p",
+        "ref": "persistence:15",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AcpiDev",
+        "detail": "\\SystemRoot\\System32\\drivers\\AcpiDev.sys",
+        "ref": "persistence:16",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] acpipagr",
+        "detail": "\\SystemRoot\\System32\\drivers\\acpipagr.sys",
+        "ref": "persistence:17",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AcpiPmi",
+        "detail": "\\SystemRoot\\System32\\drivers\\acpipmi.sys",
+        "ref": "persistence:18",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] acpitime",
+        "detail": "\\SystemRoot\\System32\\drivers\\acpitime.sys",
+        "ref": "persistence:19",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] ACPIVPC",
+        "detail": "\\SystemRoot\\System32\\drivers\\AcpiVpc.sys",
+        "ref": "persistence:20",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] Acx01000",
+        "detail": "system32\\drivers\\Acx01000.sys",
+        "ref": "persistence:21",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AJRouter",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p",
+        "ref": "persistence:22",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] ALG",
+        "detail": "%SystemRoot%\\System32\\alg.exe",
+        "ref": "persistence:23",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] amdgpio2",
+        "detail": "\\SystemRoot\\System32\\drivers\\amdgpio2.sys",
+        "ref": "persistence:24",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] amdi2c",
+        "detail": "\\SystemRoot\\System32\\drivers\\amdi2c.sys",
+        "ref": "persistence:25",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AmdK8",
+        "detail": "\\SystemRoot\\System32\\drivers\\amdk8.sys",
+        "ref": "persistence:26",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AmdPPM",
+        "detail": "\\SystemRoot\\System32\\drivers\\amdppm.sys",
+        "ref": "persistence:27",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppID",
+        "detail": "system32\\drivers\\appid.sys",
+        "ref": "persistence:28",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppIDSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalServiceNetworkRestricted -p",
+        "ref": "persistence:29",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] Appinfo",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k netsvcs -p",
+        "ref": "persistence:30",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppleLowerFilter",
+        "detail": "\\SystemRoot\\System32\\drivers\\AppleLowerFilter.sys",
+        "ref": "persistence:31",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] applockerfltr",
+        "detail": "system32\\drivers\\applockerfltr.sys",
+        "ref": "persistence:32",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppMgmt",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k netsvcs -p",
+        "ref": "persistence:33",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppReadiness",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k AppReadiness -p",
+        "ref": "persistence:34",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppvStrm",
+        "detail": "\\SystemRoot\\system32\\drivers\\AppvStrm.sys",
+        "ref": "persistence:35",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppvVemgr",
+        "detail": "\\SystemRoot\\system32\\drivers\\AppvVemgr.sys",
+        "ref": "persistence:36",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppvVfs",
+        "detail": "\\SystemRoot\\system32\\drivers\\AppvVfs.sys",
+        "ref": "persistence:37",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AppXSvc",
+        "detail": "%systemroot%\\system32\\svchost.exe -k wsappx -p",
+        "ref": "persistence:38",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AssignedAccessManagerSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k AssignedAccessManagerSvc",
+        "ref": "persistence:39",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AsyncMac",
+        "detail": "\\SystemRoot\\System32\\drivers\\asyncmac.sys",
+        "ref": "persistence:40",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AudioEndpointBuilder",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p",
+        "ref": "persistence:41",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] Audiosrv",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k LocalServiceNetworkRestricted -p",
+        "ref": "persistence:42",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] autotimesvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k autoTimeSvc",
+        "ref": "persistence:43",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] AxInstSV",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k AxInstSVGroup",
+        "ref": "persistence:44",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BcastDVRUserService",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k BcastDVRUserService",
+        "ref": "persistence:45",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BcastDVRUserService_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k BcastDVRUserService",
+        "ref": "persistence:46",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] bcmfn2",
+        "detail": "\\SystemRoot\\System32\\drivers\\bcmfn2.sys",
+        "ref": "persistence:47",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BDESVC",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k netsvcs -p",
+        "ref": "persistence:48",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] bertreader",
+        "detail": "\\SystemRoot\\System32\\drivers\\bertreader.sys",
+        "ref": "persistence:49",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BFE",
+        "detail": "%systemroot%\\system32\\svchost.exe -k LocalServiceNoNetworkFirewall -p",
+        "ref": "persistence:50",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] bindflt",
+        "detail": "\\SystemRoot\\system32\\drivers\\bindflt.sys",
+        "ref": "persistence:51",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BITS",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k netsvcs -p",
+        "ref": "persistence:52",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BluetoothUserService",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k BthAppGroup -p",
+        "ref": "persistence:53",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BluetoothUserService_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k BthAppGroup -p",
+        "ref": "persistence:54",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] bowser",
+        "detail": "system32\\DRIVERS\\bowser.sys",
+        "ref": "persistence:55",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] brave",
+        "detail": "\"C:\\Program Files (x86)\\BraveSoftware\\Update\\BraveUpdate.exe\" /svc",
+        "ref": "persistence:56",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BraveElevationService",
+        "detail": "\"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\151.1.93.138\\elevation_service.exe\"",
+        "ref": "persistence:57",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] bravem",
+        "detail": "\"C:\\Program Files (x86)\\BraveSoftware\\Update\\BraveUpdate.exe\" /medsvc",
+        "ref": "persistence:58",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BrokerInfrastructure",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k DcomLaunch -p",
+        "ref": "persistence:59",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BTAGService",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalServiceNetworkRestricted",
+        "ref": "persistence:60",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthA2dp",
+        "detail": "\\SystemRoot\\System32\\drivers\\BthA2dp.sys",
+        "ref": "persistence:61",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthAvctpSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalService -p",
+        "ref": "persistence:62",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthEnum",
+        "detail": "\\SystemRoot\\System32\\drivers\\BthEnum.sys",
+        "ref": "persistence:63",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthHFAud",
+        "detail": "\\SystemRoot\\System32\\drivers\\BthHfAud.sys",
+        "ref": "persistence:64",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthHFEnum",
+        "detail": "\\SystemRoot\\System32\\drivers\\bthhfenum.sys",
+        "ref": "persistence:65",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthLEEnum",
+        "detail": "\\SystemRoot\\System32\\drivers\\Microsoft.Bluetooth.Legacy.LEEnumerator.sys",
+        "ref": "persistence:66",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthMini",
+        "detail": "\\SystemRoot\\System32\\drivers\\BTHMINI.sys",
+        "ref": "persistence:67",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BTHMODEM",
+        "detail": "\\SystemRoot\\System32\\drivers\\bthmodem.sys",
+        "ref": "persistence:68",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BthPan",
+        "detail": "\\SystemRoot\\System32\\drivers\\bthpan.sys",
+        "ref": "persistence:69",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BTHPORT",
+        "detail": "\\SystemRoot\\System32\\drivers\\BTHport.sys",
+        "ref": "persistence:70",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] bthserv",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalService -p",
+        "ref": "persistence:71",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] BTHUSB",
+        "detail": "\\SystemRoot\\System32\\drivers\\BTHUSB.sys",
+        "ref": "persistence:72",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] buttonconverter",
+        "detail": "\\SystemRoot\\System32\\drivers\\buttonconverter.sys",
+        "ref": "persistence:73",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CAD",
+        "detail": "\\SystemRoot\\System32\\drivers\\CAD.sys",
+        "ref": "persistence:74",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] camsvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k appmodel -p",
+        "ref": "persistence:75",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CaptureService",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalService -p",
+        "ref": "persistence:76",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CaptureService_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k LocalService -p",
+        "ref": "persistence:77",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] cbdhsvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k ClipboardSvcGroup -p",
+        "ref": "persistence:78",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] cbdhsvc_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k ClipboardSvcGroup -p",
+        "ref": "persistence:79",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CDPSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalService -p",
+        "ref": "persistence:80",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CDPUserSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k UnistackSvcGroup",
+        "ref": "persistence:81",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CDPUserSvc_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k UnistackSvcGroup",
+        "ref": "persistence:82",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CertPropSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k netsvcs",
+        "ref": "persistence:83",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] cht4vbd",
+        "detail": "\\SystemRoot\\System32\\drivers\\cht4vx64.sys",
+        "ref": "persistence:84",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] circlass",
+        "detail": "\\SystemRoot\\System32\\drivers\\circlass.sys",
+        "ref": "persistence:85",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CldFlt",
+        "detail": "system32\\drivers\\cldflt.sys",
+        "ref": "persistence:86",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] ClickToRunSvc",
+        "detail": "\"C:\\Program Files\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeClickToRun.exe\" /service",
+        "ref": "persistence:87",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] ClipSVC",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k wsappx -p",
+        "ref": "persistence:88",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] cloudidsvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k CloudIdServiceGroup -p",
+        "ref": "persistence:89",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CmBatt",
+        "detail": "\\SystemRoot\\System32\\drivers\\CmBatt.sys",
+        "ref": "persistence:90",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] com.docker.service",
+        "detail": "\"C:\\Program Files\\Docker\\Docker\\com.docker.service\"",
+        "ref": "persistence:91",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CompositeBus",
+        "detail": "\\SystemRoot\\System32\\DriverStore\\FileRepository\\compositebus.inf_amd64_7500cffa210c6946\\CompositeBus.sys",
+        "ref": "persistence:92",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] COMSysApp",
+        "detail": "%SystemRoot%\\system32\\dllhost.exe /Processid:{02D4B3F1-FD88-11D1-960D-00805FC79235}",
+        "ref": "persistence:93",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] condrv",
+        "detail": "System32\\drivers\\condrv.sys",
+        "ref": "persistence:94",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] ConsentUxUserSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k DevicesFlow",
+        "ref": "persistence:95",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] ConsentUxUserSvc_1a80e9",
+        "detail": "C:\\Windows\\system32\\svchost.exe -k DevicesFlow",
+        "ref": "persistence:96",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CoreMessagingRegistrar",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k LocalServiceNoNetwork -p",
+        "ref": "persistence:97",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] cphs",
+        "detail": "%SystemRoot%\\System32\\DriverStore\\FileRepository\\iigd_dch.inf_amd64_5579cd97fbcd455d\\IntelCpHeciSvc.exe",
+        "ref": "persistence:98",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] cplspcon",
+        "detail": "%SystemRoot%\\System32\\DriverStore\\FileRepository\\iigd_dch.inf_amd64_5579cd97fbcd455d\\IntelCpHDCPSvc.exe",
+        "ref": "persistence:99",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CredentialEnrollmentManagerUserSvc",
+        "detail": "%SystemRoot%\\system32\\CredentialEnrollmentManager.exe",
+        "ref": "persistence:100",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CredentialEnrollmentManagerUserSvc_1a80e9",
+        "detail": "C:\\Windows\\system32\\CredentialEnrollmentManager.exe",
+        "ref": "persistence:101",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CryptSvc",
+        "detail": "%SystemRoot%\\system32\\svchost.exe -k NetworkService -p",
+        "ref": "persistence:102",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      },
+      {
+        "ts": "2026-08-23T07:11:15+00:00",
+        "kind": "persistence",
+        "severity": "low",
+        "title": "[PERSISTENCE service] CscService",
+        "detail": "%SystemRoot%\\System32\\svchost.exe -k LocalSystemNetworkRestricted -p",
+        "ref": "persistence:103",
+        "_dt": "2026-08-23 07:11:15+00:00"
+      }
+    ],
+    "total": 738,
+    "skew": []
+  },
+  "detections": [
+    {
+      "id": 22,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Account Discovery via Whoami",
+      "severity": "low",
+      "technique_id": "T1033",
+      "summary": "{\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "System Owner/User Discovery"
+    },
+    {
+      "id": 21,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Scheduled Task Creation via Schtasks",
+      "severity": "medium",
+      "technique_id": "T1053.005",
+      "summary": "{\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Scheduled Task"
+    },
+    {
+      "id": 19,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Suspicious Reverse Shell Destination Ports",
+      "severity": "critical",
+      "technique_id": "T1071.001",
+      "summary": "{\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Web Protocols"
+    },
+    {
+      "id": 18,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "PowerShell Encoded Command Execution",
+      "severity": "high",
+      "technique_id": "T1059.001",
+      "summary": "{\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "PowerShell"
+    },
+    {
+      "id": 16,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Account Discovery via Whoami",
+      "severity": "low",
+      "technique_id": "T1033",
+      "summary": "{\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "System Owner/User Discovery"
+    },
+    {
+      "id": 15,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Scheduled Task Creation via Schtasks",
+      "severity": "medium",
+      "technique_id": "T1053.005",
+      "summary": "{\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Scheduled Task"
+    },
+    {
+      "id": 13,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Suspicious Reverse Shell Destination Ports",
+      "severity": "critical",
+      "technique_id": "T1071.001",
+      "summary": "{\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Web Protocols"
+    },
+    {
+      "id": 12,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "PowerShell Encoded Command Execution",
+      "severity": "high",
+      "technique_id": "T1059.001",
+      "summary": "{\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "PowerShell"
+    },
+    {
+      "id": 10,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Account Discovery via Whoami",
+      "severity": "low",
+      "technique_id": "T1033",
+      "summary": "{\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "System Owner/User Discovery"
+    },
+    {
+      "id": 9,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Scheduled Task Creation via Schtasks",
+      "severity": "medium",
+      "technique_id": "T1053.005",
+      "summary": "{\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Scheduled Task"
+    },
+    {
+      "id": 7,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Suspicious Reverse Shell Destination Ports",
+      "severity": "critical",
+      "technique_id": "T1071.001",
+      "summary": "{\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Web Protocols"
+    },
+    {
+      "id": 6,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "PowerShell Encoded Command Execution",
+      "severity": "high",
+      "technique_id": "T1059.001",
+      "summary": "{\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "PowerShell"
+    },
+    {
+      "id": 4,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Account Discovery via Whoami",
+      "severity": "low",
+      "technique_id": "T1033",
+      "summary": "{\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "System Owner/User Discovery"
+    },
+    {
+      "id": 3,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Scheduled Task Creation via Schtasks",
+      "severity": "medium",
+      "technique_id": "T1053.005",
+      "summary": "{\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn AtorPersist /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Scheduled Task"
+    },
+    {
+      "id": 2,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "Suspicious Reverse Shell Destination Ports",
+      "severity": "critical",
+      "technique_id": "T1071.001",
+      "summary": "{\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "Web Protocols"
+    },
+    {
+      "id": 1,
+      "host_id": 1,
+      "collection_id": "win-atk-001",
+      "rule_type": "sigma",
+      "rule_name": "PowerShell Encoded Command Execution",
+      "severity": "high",
+      "technique_id": "T1059.001",
+      "summary": "{\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgAKQAgAA==\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}",
+      "detected_at_utc": "2026-08-23T07:11:15+00:00",
+      "evidence_json": null,
+      "technique_name": "PowerShell"
+    }
+  ],
+  "ioc_hits": [],
+  "manifests": [
+    {
+      "collection_id": "1e56f507-6a1b-47e2-9e85-7baf63f4512b",
+      "started_at_utc": "2026-08-23T07:10:59+00:00",
+      "finished_at_utc": "2026-08-23T07:11:15+00:00",
+      "agent_version": "1.0.0",
+      "artifact_count": 3830,
+      "manifest_sha256": "315f1509e390412f2e8bfeeeb2956f48a9c5fc8eec96e07012902ac3b1830a8e"
+    },
+    {
+      "collection_id": "win-atk-001",
+      "started_at_utc": "2026-08-23T07:11:15+00:00",
+      "finished_at_utc": "2026-08-23T07:11:15+00:00",
+      "agent_version": "1.0.0-e2e",
+      "artifact_count": 6,
+      "manifest_sha256": "d2278f4e6a6a10e265048c94fe4769a464bfe504983c5c29eb243d4136caaf68"
+    }
+  ],
+  "generated_at_utc": "2026-08-23T07:11:18+00:00"
+}

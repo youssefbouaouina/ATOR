@@ -1,0 +1,21 @@
+title: Registry Run Key Persistence via Reg Add
+id: 2ec9d7fd-1715-5169-bd2c-3fac59a3c1c6
+status: stable
+description: Detects attempts to add autostart entries under Run/RunOnce registry keys.
+logsource:
+    category: process_creation
+detection:
+    selection_img:
+        Image|endswith: '\reg.exe'
+    selection_key:
+        CommandLine|contains:
+            - '\Software\Microsoft\Windows\CurrentVersion\Run'
+            - '\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+    selection_action:
+        CommandLine|contains|all:
+            - ' add '
+    condition: selection_img and selection_key and selection_action
+tags:
+    - attack.persistence
+    - attack.t1547.001
+level: high
