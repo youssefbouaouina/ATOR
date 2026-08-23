@@ -151,6 +151,7 @@ def run_engine(conn=None, rules_dir=None):
         enrich_result = attack_mapper.enrich_detections(conn, detection_ids=ids)
         approvals = evaluate_policies(conn, detection_ids=ids if ids else None)
         _kv_set(conn, "engine_last_run_utc", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        conn.commit()
         return {
             "sigma_hits": len(sigma_hits),
             "total_new_detections": len(ids),

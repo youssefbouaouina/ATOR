@@ -1,7 +1,7 @@
+import html
 import json
 import os
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from server.engine import soc_chain, timeline
 from server.engine.attack_mapper import TACTIC_ORDER
@@ -21,6 +21,9 @@ TACTIC_HEX = {
     "exfiltration": "#c0392b", "impact": "#7b241c",
 }
 
+MITRE_BASE_URL = "https://attack.mitre.org/techniques/enterprise/"
+LINK_COLOR = "#2456a6"
+
 
 def _ensure_dir():
     os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -36,7 +39,7 @@ def host_report_data(conn, host_id):
     tl = timeline.build(conn, host_id, limit=120)
     detections = conn.execute(
         """
-        SELECT d.*, e.technique_name FROM detections d
+        SELECT d.*, e.technique_name, e.tactic FROM detections d
         LEFT JOIN enriched_detections e ON e.detection_id = d.id
         WHERE d.host_id=? ORDER BY d.detected_at_utc DESC LIMIT 200
         """,
@@ -60,101 +63,324 @@ def host_report_data(conn, host_id):
     }
 
 
+def _short_ts(ts):
+    if not ts:
+        return "-"
+    return str(ts).replace("T", " ")[:19]
+
+
+def _mitre_link(technique_id, style):
+    if not technique_id:
+        return "-"
+    url = f"{MITRE_BASE_URL}{technique_id}/"
+    return (
+        f'<a href="{url}" color="{LINK_COLOR}">'
+        f'<u>{html.escape(technique_id)}</u></a>'
+    )
+
+
+def _severity_pie(counts):
+    import reportlab.lib.colors as rl_colors
+    from reportlab.graphics.charts.legends import Legend
+    from reportlab.graphics.charts.piecharts import Pie
+    from reportlab.graphics.shapes import Drawing
+
+    d = Drawing(250, 165)
+    values = [counts.get("critical", 0), counts.get("high", 0),
+              counts.get("medium", 0), counts.get("low", 0)]
+    pc = Pie()
+    pc.x, pc.y = 55, 28
+    pc.width = 110
+    pc.height = 110
+    pc.data = values or [1]
+    pc.labels = None
+    palette = ["#c0392b", "#d35400", "#b7791f", "#1e8e5a"]
+    for i, hexcolor in enumerate(palette):
+        pc.slices[i].fillColor = rl_colors.HexColor(hexcolor)
+        pc.slices[i].strokeColor = None
+    d.add(pc)
+
+    leg = Legend()
+    leg.x, leg.y = 168, 118
+    leg.deltax = 0
+    leg.deltay = 16
+    leg.fontSize = 7.5
+    leg.strokeColor = None
+    leg.columnMaximum = 4
+    names = ["critical", "high", "medium", "low"]
+    leg.colorNamePairs = [
+        (rl_colors.HexColor(palette[i]), f"{names[i]} ({values[i]})") for i in range(4)
+    ]
+    d.add(leg)
+    return d
+
+
+def _tactic_bars(tactic_counts):
+    from reportlab.graphics.charts.barcharts import HorizontalBarChart
+    from reportlab.graphics.shapes import Drawing
+    import reportlab.lib.colors as rl_colors
+
+    ordered = [t for t in TACTIC_ORDER if t in tactic_counts]
+    if not ordered:
+        return None
+    labels = [t.replace("-", " ").title() for t in ordered]
+    values = [tactic_counts[t] for t in ordered]
+
+    d = Drawing(265, max(120, 20 * len(labels) + 40))
+    bc = HorizontalBarChart()
+    bc.x = 92
+    bc.y = 18
+    bc.width = 150
+    bc.height = max(90, 20 * len(labels))
+    bc.data = [values]
+    bc.categoryAxis.categoryNames = labels
+    bc.categoryAxis.labels.fontName = "Helvetica"
+    bc.categoryAxis.labels.fontSize = 7
+    bc.categoryAxis.labels.dx = -4
+    bc.valueAxis.valueMin = 0
+    bc.valueAxis.valueMax = max(values) + 1
+    bc.valueAxis.valueStep = max(1, max(values) // 5)
+    bc.valueAxis.labels.fontSize = 6.5
+    bc.valueAxis.strokeColor = rl_colors.HexColor("#cbd5e1")
+    bc.categoryAxis.strokeColor = rl_colors.HexColor("#cbd5e1")
+    bc.bars[(0, 0)].fillColor = rl_colors.HexColor("#2456a6")
+    bc.barLabels.fontName = "Helvetica"
+    bc.barLabels.fontSize = 7
+    bc.barLabelFormat = "%d"
+    bc.barLabels.nudge = 6
+    for i, t in enumerate(ordered):
+        bc.bars[(0, i)].fillColor = rl_colors.HexColor(TACTIC_HEX.get(t, "#2456a6"))
+    d.add(bc)
+    return d
+
+
+def _trend_chart(conn, host_id):
+    from reportlab.graphics.charts.linecharts import HorizontalLineChart
+    from reportlab.graphics.shapes import Drawing
+    import reportlab.lib.colors as rl_colors
+
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=23)).strftime("%Y-%m-%dT%H")
+    buckets = {}
+    for row in conn.execute(
+        "SELECT substr(detected_at_utc,1,13) AS h, COUNT(*) AS n FROM detections"
+        " WHERE host_id=? AND detected_at_utc >= ? GROUP BY h",
+        (host_id, cutoff),
+    ):
+        buckets[row["h"]] = row["n"]
+    labels = []
+    values = []
+    for i in range(23, -1, -1):
+        hr = (now - timedelta(hours=i)).strftime("%Y-%m-%dT%H")
+        labels.append(hr[11:] + "h")
+        values.append(buckets.get(hr, 0))
+
+    d = Drawing(500, 130)
+    lc = HorizontalLineChart()
+    lc.x = 38
+    lc.y = 22
+    lc.width = 430
+    lc.height = 88
+    lc.data = [values]
+    lc.lines[0].strokeColor = rl_colors.HexColor("#2456a6")
+    lc.lines[0].strokeWidth = 1.6
+    lc.lines[0].symbol = None
+    lc.categoryAxis.categoryNames = labels
+    lc.categoryAxis.labels.fontName = "Helvetica"
+    lc.categoryAxis.labels.fontSize = 6
+    lc.categoryAxis.labels.dy = -3
+    lc.categoryAxis.strokeColor = rl_colors.HexColor("#cbd5e1")
+    lc.valueAxis.valueMin = 0
+    lc.valueAxis.valueMax = max(values + [4])
+    lc.valueAxis.valueStep = max(1, int(max(values + [4]) / 4))
+    lc.valueAxis.labels.fontName = "Helvetica"
+    lc.valueAxis.labels.fontSize = 6
+    lc.valueAxis.strokeColor = rl_colors.HexColor("#cbd5e1")
+    d.add(lc)
+    return d
+
+
 def generate_pdf(conn, host_id, out_path=None):
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import (
         Paragraph, SimpleDocTemplate, Spacer, Table as RLTable, TableStyle,
     )
+    from reportlab.lib.colors import HexColor
 
     data = host_report_data(conn, host_id)
     if data is None:
         return None
     _ensure_dir()
     out_path = out_path or os.path.join(
-        _ensure_dir(), f"incident_report_host{host_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.pdf"
+        _ensure_dir(),
+        f"incident_report_host{host_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.pdf",
     )
 
     styles = getSampleStyleSheet()
+    h2 = ParagraphStyle("ATORH2", parent=styles["Heading2"], spaceBefore=6, spaceAfter=4)
+    body = ParagraphStyle("ATORBody", parent=styles["BodyText"], fontSize=9, leading=12.5)
+    cell = ParagraphStyle("ATORCell", parent=styles["BodyText"], fontSize=7.5, leading=9.5)
+    cellB = ParagraphStyle("ATORCellB", parent=cell, fontName="Helvetica-Bold")
+    cellMono = ParagraphStyle("ATORCellMono", parent=cell, fontName="Courier", fontSize=6.8, leading=8.4)
+    tocLink = ParagraphStyle("ATORToc", parent=body, leading=15)
+    note = ParagraphStyle("ATORNote", parent=styles["BodyText"], fontSize=8, textColor=colors.HexColor("#64748b"))
+
+    def P(text, st=cell):
+        return Paragraph(html.escape(str(text)), st)
+
+    def PH(markup, st=cell):
+        return Paragraph(markup, st)
+
     story = []
 
+    def outline_heading(text, key, level=0):
+        p = Paragraph(html.escape(text), h2)
+        p._ator_outline = (text, key, level)
+        return p
+
+    def anchored_heading(text, key, level=0):
+        p = Paragraph(f'<a name="{key}"/>' + html.escape(text), h2)
+        p._ator_outline = (text, key, level)
+        return p
+
     risk = data["risk"]
-    title_style = styles["Title"]
-    story.append(Paragraph("ATOR DFIR - Incident Investigation Report", title_style))
+    host = data["host"]
+    generated_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    story.append(Paragraph("ATOR DFIR - Incident Investigation Report", styles["Title"]))
+    story.append(Spacer(1, 3 * mm))
+
+    story.append(Paragraph("<b>Contents</b>", styles["Heading3"]))
+    for label, key in [
+        ("1. Executive Summary", "sec-exec"),
+        ("2. Detection Analytics", "sec-analytics"),
+        ("3. Observed Attack Chain", "sec-chain"),
+        ("4. ATT&amp;CK Coverage Matrix", "sec-matrix"),
+        ("5. Technical Annex - Detections", "sec-detections"),
+        ("6. Timeline Highlights", "sec-timeline"),
+        ("7. Evidence Integrity", "sec-manifests"),
+    ]:
+        story.append(PH(f'<a href="#{key}" color="{LINK_COLOR}">{label}</a>', tocLink))
     story.append(Spacer(1, 4 * mm))
 
     verdict_color = {
-        "CRITICAL": colors.HexColor("#c0392b"),
-        "HIGH": colors.HexColor("#d35400"),
-        "MEDIUM": colors.HexColor("#f39c12"),
-        "LOW": colors.HexColor("#27ae60"),
-        "CLEAN": colors.HexColor("#16a085"),
-    }.get(risk["risk_level"], colors.black)
+        "CRITICAL": "#c0392b", "HIGH": "#d35400",
+        "MEDIUM": "#b7791f", "LOW": "#1e8e5a", "CLEAN": "#16a085",
+    }.get(risk["risk_level"], "#000000")
 
     summary_rows = [
-        ["Verdict", risk["verdict"]],
-        ["Risk Level", risk["risk_level"]],
-        ["Host", f"{data['host']['hostname']} ({data['host']['os_type']})"],
-        ["Attack Stages Observed", str(risk["attack_stages_observed"])],
-        ["Detections (C/H/M/L)", f"{risk['counts']['critical']} / {risk['counts']['high']} / {risk['counts']['medium']} / {risk['counts']['low']}"],
-        ["Generated (UTC)", data["generated_at_utc"]],
+        ["Verdict", PH(f'<font color="{verdict_color}"><b>{risk["verdict"]}</b></font>', cell)],
+        ["Risk Level", P(risk["risk_level"])],
+        ["Host", P(f'{host["hostname"]} ({host["os_type"]})')],
+        ["Agent Version", P(host["agent_version"] or "-")],
+        ["Attack Stages Observed", P(str(risk["attack_stages_observed"]))],
+        ["Detections (C/H/M/L)", P(f'{risk["counts"]["critical"]} / {risk["counts"]["high"]} / '
+                                   f'{risk["counts"]["medium"]} / {risk["counts"]["low"]}')],
+        ["Generated (UTC)", P(generated_ts)],
     ]
-    t = RLTable(summary_rows, colWidths=[55 * mm, 105 * mm])
+    t = RLTable(summary_rows, colWidths=[48 * mm, 134 * mm])
     t.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#ecf0f1")),
-        ("TEXTCOLOR", (1, 0), (1, 0), verdict_color),
-        ("FONTNAME", (1, 0), (1, 0), "Helvetica-Bold"),
+        ("BACKGROUND", (0, 0), (0, -1), HexColor("#ecf0f1")),
+        ("TEXTCOLOR", (1, 0), (1, 0), HexColor(verdict_color)),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(t)
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 5 * mm))
 
-    story.append(Paragraph("Executive Summary", styles["Heading2"]))
+    story.append(anchored_heading("Executive Summary", "sec-exec"))
     exec_text = (
-        f"An automated investigation of endpoint <b>{data['host']['hostname']}</b> identified "
-        f"{sum(risk['counts'].values())} detection(s) across {risk['attack_stages_observed']} ATT&amp;CK tactic stage(s). "
-        f"The overall assessment is <b><font color='#{verdict_color.hexval()[2:]}'>{risk['risk_level']}</font></b>: {risk['verdict']}. "
-        f"Recommended actions: preserve evidence manifests, review the technical annex timeline, and apply containment "
-        f"via the approval workflow if compromise indicators are confirmed."
+        f'An automated investigation of endpoint <b>{html.escape(host["hostname"])}</b> identified '
+        f'{sum(risk["counts"].values())} detection(s) across {risk["attack_stages_observed"]} ATT&amp;CK '
+        f'tactic stage(s). The overall assessment is <b><font color="{verdict_color}">'
+        f'{risk["risk_level"]}</font></b>: {html.escape(risk["verdict"])}. Recommended actions: preserve '
+        f'evidence manifests (section 7), review the attack chain (section 3) and technical annex '
+        f'(sections 5-6), and apply containment through the approval workflow if compromise indicators '
+        f'are confirmed. All timestamps are normalized to UTC.'
     )
-    story.append(Paragraph(exec_text, styles["BodyText"]))
-    story.append(Spacer(1, 6 * mm))
+    story.append(Paragraph(exec_text, body))
+    story.append(Spacer(1, 5 * mm))
 
-    story.append(Paragraph("Observed Attack Chain (Source of Compromise)", styles["Heading2"]))
+    story.append(anchored_heading("Detection Analytics", "sec-analytics"))
+    tactic_counts = {}
+    for d in data["detections"]:
+        if not d.get("tactic"):
+            continue
+        try:
+            parsed = json.loads(d["tactic"])
+            for entry in parsed:
+                short = entry.get("short")
+                if short:
+                    tactic_counts[short] = tactic_counts.get(short, 0) + 1
+        except json.JSONDecodeError:
+            continue
+
+    pie = _severity_pie(risk["counts"])
+    bars = _tactic_bars(tactic_counts)
+    analytics_cells = [[pie, bars or P("No tactic data yet.")]]
+    at = RLTable(analytics_cells, colWidths=[91 * mm, 91 * mm])
+    at.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (0, 0), "CENTER"),
+        ("BOX", (0, 0), (0, 0), 0.4, HexColor("#e2e8f0")),
+        ("BOX", (1, 0), (1, 0), 0.4, HexColor("#e2e8f0")),
+    ]))
+    story.append(at)
+    story.append(Spacer(1, 3 * mm))
+    story.append(P("Detections per hour - last 24 hours (UTC):", ParagraphStyle(
+        "ATORMiniHead", parent=styles["BodyText"], fontSize=8, textColor=colors.HexColor("#64748b"))))
+    trend = _trend_chart(conn, host_id)
+    story.append(trend)
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(anchored_heading("Observed Attack Chain (Source of Compromise)", "sec-chain"))
     if data["chain"]["chain"]:
-        chain_rows = [["#", "Tactic", "Techniques", "First Seen (UTC)", "Last Seen (UTC)"]]
+        chain_rows = [["#", "Tactic", "Techniques (click ID for MITRE reference)", "Observed Window (UTC)"]]
         for i, step in enumerate(data["chain"]["chain"], 1):
-            tech_str = "; ".join(
-                f"{t['id'] or '-'} {t['name']} (x{t['hits']})" for t in step["techniques"]
-            )[:220]
-            chain_rows.append([str(i), step["display"], tech_str, step["first_seen"], step["last_seen"]])
-        ct = RLTable(chain_rows, colWidths=[8 * mm, 32 * mm, 78 * mm, 21 * mm, 21 * mm])
+            tech_parts = []
+            for tech in step["techniques"]:
+                tid = tech["id"]
+                id_html = _mitre_link(tid, cell) if tid else "-"
+                tech_parts.append(f'{id_html} {html.escape(tech["name"])} (x{tech["hits"]})')
+            window = PH(
+                f'{_short_ts(step["first_seen"])}<br/>&#8594; {_short_ts(step["last_seen"])}',
+                cellMono,
+            )
+            chain_rows.append([
+                P(str(i)),
+                P(step["display"]),
+                PH("<br/>".join(tech_parts)),
+                window,
+            ])
+        ct = RLTable(chain_rows, colWidths=[8 * mm, 32 * mm, 98 * mm, 44 * mm], repeatRows=1)
         ct.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8f9fa")]),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, HexColor("#f8fafc")]),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         story.append(ct)
     else:
-        story.append(Paragraph("No attack chain reconstructed.", styles["BodyText"]))
-    story.append(Spacer(1, 6 * mm))
+        story.append(P("No attack chain reconstructed.", body))
+    story.append(Spacer(1, 5 * mm))
 
-    story.append(Paragraph("ATT&CK Matrix Coverage (observed tactics highlighted)", styles["Heading2"]))
+    story.append(anchored_heading("ATT&CK Coverage Matrix (observed tactics highlighted)", "sec-matrix"))
     observed = {step["tactic"]: True for step in data["chain"]["chain"]}
     matrix_cells = []
     row_cells = []
     for tactic in TACTIC_ORDER:
-        style_cmd = ("BACKGROUND", (len(row_cells) % 7 + 0, len(matrix_cells)),) if False else None
-        row_cells.append(tactic.replace("-", "\n").title() if not observed.get(tactic) else tactic.replace("-", "\n").title() + " *")
+        marker = " *" if observed.get(tactic) else ""
+        row_cells.append(tactic.replace("-", "\n").title() + marker)
         if len(row_cells) == 7:
             matrix_cells.append(row_cells)
             row_cells = []
@@ -162,76 +388,151 @@ def generate_pdf(conn, host_id, out_path=None):
         while len(row_cells) < 7:
             row_cells.append("")
         matrix_cells.append(row_cells)
-    mt = RLTable(matrix_cells, colWidths=[24 * mm] * 7)
+    mt = RLTable(matrix_cells, colWidths=[26 * mm] * 7)
     mt_style = [
         ("FONTSIZE", (0, 0), (-1, -1), 6.5),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
     for r_idx, r_row in enumerate(matrix_cells):
-        for c_idx, cell in enumerate(r_row):
-            base = cell.split("\n")[0].lower().replace("\n", "-")
-            matched_tactic = next((t for t in TACTIC_ORDER if t.startswith(base.split(" ")[0])), None)
-            if observed.get(matched_tactic):
+        for c_idx, raw_cell in enumerate(r_row):
+            base = raw_cell.split("\n")[0].lower().strip(" *")
+            matched_tactic = next((tc for tc in TACTIC_ORDER if tc.startswith(base)), None) if base else None
+            if matched_tactic and observed.get(matched_tactic):
                 mt_style.append(("BACKGROUND", (c_idx, r_idx), (c_idx, r_idx),
-                                 colors.HexColor(TACTIC_HEX.get(matched_tactic, "#7f8c8d"))))
+                                 HexColor(TACTIC_HEX.get(matched_tactic, "#7f8c8d"))))
                 mt_style.append(("TEXTCOLOR", (c_idx, r_idx), (c_idx, r_idx), colors.white))
                 mt_style.append(("FONTNAME", (c_idx, r_idx), (c_idx, r_idx), "Helvetica-Bold"))
     mt.setStyle(TableStyle(mt_style))
     story.append(mt)
-    story.append(Paragraph("* = tactic observed on this host", styles["Italic"]))
-    story.append(Spacer(1, 6 * mm))
+    story.append(P("* = tactic observed on this host", note))
+    story.append(Spacer(1, 5 * mm))
 
-    story.append(Paragraph("Technical Annex - Key Detections", styles["Heading2"]))
+    story.append(anchored_heading("Technical Annex - Key Detections", "sec-detections"))
     det_rows = [["Time (UTC)", "Type", "Rule", "Sev", "MITRE", "Detail"]]
     for d in data["detections"][:40]:
         detail = ""
         try:
             ev = json.loads(d["summary"] or "{}")
-            detail = "; ".join(f"{k}={v}" for k, v in list(ev.items())[:4])[:150]
+            detail = "; ".join(f"{k}={v}" for k, v in list(ev.items())[:5])
         except json.JSONDecodeError:
             pass
         det_rows.append([
-            d["detected_at_utc"], d["rule_type"], d["rule_name"][:40],
-            d["severity"], d["technique_id"] or "-", detail,
+            P(_short_ts(d["detected_at_utc"]), cellMono),
+            P(d["rule_type"]),
+            P(d["rule_name"]),
+            P(d["severity"]),
+            PH(_mitre_link(d["technique_id"], cell)) if d["technique_id"] else P("-"),
+            P(detail[:220], cellMono),
         ])
-    dt = RLTable(det_rows, colWidths=[26 * mm, 14 * mm, 45 * mm, 12 * mm, 18 * mm, 45 * mm], repeatRows=1)
+    dt = RLTable(det_rows, colWidths=[27 * mm, 13 * mm, 40 * mm, 15 * mm, 21 * mm, 66 * mm],
+                 repeatRows=1)
     dt.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+        ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, HexColor("#f8fafc")]),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(dt)
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(anchored_heading("Timeline Highlights", "sec-timeline"))
+    tl_events = [e for e in data["timeline"]["events"] if e.get("ts")][:25]
+    if tl_events:
+        tl_rows = [["Time (UTC)", "Kind", "Event", "Detail"]]
+        for e in tl_events:
+            tl_rows.append([
+                P(_short_ts(e["ts"]), cellMono),
+                P(e["kind"]),
+                P(e["title"]),
+                P(str(e.get("detail", ""))[:180], cellMono),
+            ])
+        tt = RLTable(tl_rows, colWidths=[30 * mm, 21 * mm, 58 * mm, 73 * mm], repeatRows=1)
+        tt.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, HexColor("#f8fafc")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(tt)
+    else:
+        story.append(P("No timeline events recorded for this host.", body))
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(anchored_heading("Evidence Integrity (Manifests)", "sec-manifests"))
+    man_rows = [["Collection ID", "Started (UTC)", "Agent Ver", "Artifacts", "Manifest SHA-256"]]
+    for m in data["manifests"]:
+        man_rows.append([
+            P(m["collection_id"], cellMono),
+            P(_short_ts(m["started_at_utc"]), cell),
+            P(m["agent_version"] or "-", cell),
+            P(str(m["artifact_count"]), cell),
+            P((m["manifest_sha256"] or "")[:64], cellMono),
+        ])
+    mtbl = RLTable(man_rows, colWidths=[34 * mm, 32 * mm, 18 * mm, 16 * mm, 82 * mm])
+    mtbl.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
-    story.append(dt)
-    story.append(Spacer(1, 6 * mm))
-
-    story.append(Paragraph("Evidence Integrity (Manifests)", styles["Heading2"]))
-    man_rows = [["Collection ID", "Started (UTC)", "Agent Ver", "Artifacts", "Manifest SHA-256"]]
-    for m in data["manifests"]:
-        man_rows.append([m["collection_id"][:13] + "...", m["started_at_utc"] or "",
-                         m["agent_version"] or "", str(m["artifact_count"]), m["manifest_sha256"][:32] + "..."])
-    mtbl = RLTable(man_rows, colWidths=[28 * mm, 30 * mm, 20 * mm, 18 * mm, 64 * mm])
-    mtbl.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
-    ]))
     story.append(mtbl)
-    story.append(Spacer(1, 4 * mm))
-    story.append(Paragraph(
-        f"Timeline events analyzed: {data['timeline']['total']}; time-skew anomalies flagged: {len(data['timeline']['skew'])}. "
-        "All timestamps normalized to UTC at ingestion.",
-        styles["BodyText"],
+    story.append(Spacer(1, 3 * mm))
+    story.append(P(
+        f'Timeline events analyzed: {data["timeline"]["total"]}; time-skew anomalies flagged: '
+        f'{len(data["timeline"]["skew"])}. Every manifest SHA-256 is verified server-side at ingestion; '
+        'hashes above let recipients re-verify collection integrity independently.',
+        body,
     ))
 
-    doc = SimpleDocTemplate(out_path, pagesize=A4)
-    doc.build(story)
-    return out_path
+    from reportlab.lib.pagesizes import A4
 
+    class _DocTemplate(SimpleDocTemplate):
+        def afterFlowable(self, flowable):
+            outline = getattr(flowable, "_ator_outline", None)
+            if outline:
+                title, key, level = outline
+                self.canv.bookmarkPage(key)
+                self.canv.addOutlineEntry(title, key, level=level, closed=False)
+
+    doc = _DocTemplate(
+        out_path,
+        pagesize=A4,
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=17 * mm,
+        bottomMargin=15 * mm,
+        title=f"ATOR DFIR Incident Report - {host['hostname']}",
+        author="ATOR DFIR Framework",
+        subject=f"Investigation report for {host['hostname']} ({host['os_type']})",
+    )
+
+    def decorate(canvas, _doc):
+        canvas.saveState()
+        w, hgt = A4
+        gray = HexColor("#94a3b8")
+        line = HexColor("#e2e8f0")
+        canvas.setFont("Helvetica", 6.5)
+        canvas.setFillColor(gray)
+        canvas.drawString(doc.leftMargin, hgt - 30, "CONFIDENTIAL // DFIR INVESTIGATION REPORT")
+        canvas.drawRightString(w - doc.rightMargin, hgt - 30, f"host: {host['hostname']}")
+        canvas.setStrokeColor(line)
+        canvas.line(doc.leftMargin, hgt - 34, w - doc.rightMargin, hgt - 34)
+        canvas.drawString(doc.leftMargin, 24,
+                          f"ATOR DFIR Framework · generated {generated_ts} UTC · containment mode: DRY-RUN")
+        canvas.drawRightString(w - doc.rightMargin, 24, f"Page {canvas.getPageNumber()}")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=decorate, onLaterPages=decorate)
+    return out_path
 
 def generate_json(conn, host_id, out_path=None):
     data = host_report_data(conn, host_id)
@@ -244,6 +545,8 @@ def generate_json(conn, host_id, out_path=None):
 
 
 def generate_stix(conn, host_id, out_path=None):
+    import uuid
+
     now = datetime.now(timezone.utc)
     ts = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
     objects = [{

@@ -13,12 +13,12 @@
   },
   "risk": {
     "counts": {
-      "critical": 4,
-      "high": 2,
-      "medium": 2,
-      "low": 2
+      "critical": 2,
+      "high": 1,
+      "medium": 1,
+      "low": 1
     },
-    "score": 128,
+    "score": 64,
     "verdict": "CONFIRMED COMPROMISE INDICATORS - MULTI-STAGE ATTACK CHAIN",
     "risk_level": "CRITICAL",
     "attack_stages_observed": 6
@@ -34,18 +34,16 @@
           {
             "id": "T1059.001",
             "name": "PowerShell",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:01:00+00:00",
               "2026-08-22T09:01:00+00:00"
             ]
           },
           {
             "id": "T1053.005",
             "name": "Scheduled Task",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:05:00+00:00",
               "2026-08-22T09:05:00+00:00"
             ]
           }
@@ -61,9 +59,8 @@
           {
             "id": "T1053.005",
             "name": "Scheduled Task",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:05:00+00:00",
               "2026-08-22T09:05:00+00:00"
             ]
           }
@@ -79,9 +76,8 @@
           {
             "id": "T1053.005",
             "name": "Scheduled Task",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:05:00+00:00",
               "2026-08-22T09:05:00+00:00"
             ]
           }
@@ -97,9 +93,8 @@
           {
             "id": "T1003.001",
             "name": "LSASS Memory",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:07:00+00:00",
               "2026-08-22T09:07:00+00:00"
             ]
           }
@@ -115,9 +110,8 @@
           {
             "id": "T1033",
             "name": "System Owner/User Discovery",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:03:00+00:00",
               "2026-08-22T09:03:00+00:00"
             ]
           }
@@ -133,9 +127,8 @@
           {
             "id": "T1071.001",
             "name": "Web Protocols",
-            "hits": 2,
+            "hits": 1,
             "times": [
-              "2026-08-22T09:11:00+00:00",
               "2026-08-22T09:11:00+00:00"
             ]
           }
@@ -158,30 +151,12 @@
         "_dt": "2026-08-22 09:01:00+00:00"
       },
       {
-        "ts": "2026-08-22T09:01:00+00:00",
-        "kind": "detection",
-        "severity": "high",
-        "title": "[SIGMA] PowerShell Encoded Command Execution",
-        "detail": "{\"technique_id\": \"T1059.001\", \"summary\": {\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgA\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}}",
-        "ref": "detection:9",
-        "_dt": "2026-08-22 09:01:00+00:00"
-      },
-      {
         "ts": "2026-08-22T09:03:00+00:00",
         "kind": "detection",
         "severity": "low",
         "title": "[SIGMA] Account Discovery via Whoami",
         "detail": "{\"technique_id\": \"T1033\", \"summary\": {\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}}",
         "ref": "detection:6",
-        "_dt": "2026-08-22 09:03:00+00:00"
-      },
-      {
-        "ts": "2026-08-22T09:03:00+00:00",
-        "kind": "detection",
-        "severity": "low",
-        "title": "[SIGMA] Account Discovery via Whoami",
-        "detail": "{\"technique_id\": \"T1033\", \"summary\": {\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}}",
-        "ref": "detection:12",
         "_dt": "2026-08-22 09:03:00+00:00"
       },
       {
@@ -194,15 +169,6 @@
         "_dt": "2026-08-22 09:05:00+00:00"
       },
       {
-        "ts": "2026-08-22T09:05:00+00:00",
-        "kind": "detection",
-        "severity": "medium",
-        "title": "[SIGMA] Scheduled Task Creation via Schtasks",
-        "detail": "{\"technique_id\": \"T1053.005\", \"summary\": {\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn Updater /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}}",
-        "ref": "detection:11",
-        "_dt": "2026-08-22 09:05:00+00:00"
-      },
-      {
         "ts": "2026-08-22T09:07:00+00:00",
         "kind": "detection",
         "severity": "critical",
@@ -212,30 +178,12 @@
         "_dt": "2026-08-22 09:07:00+00:00"
       },
       {
-        "ts": "2026-08-22T09:07:00+00:00",
-        "kind": "detection",
-        "severity": "critical",
-        "title": "[SIGMA] Credential Dumping Tool Mimikatz Execution",
-        "detail": "{\"technique_id\": \"T1003.001\", \"summary\": {\"pid\": \"4103\", \"ppid\": \"4100\", \"name\": \"mimikatz.exe\", \"cmdline\": \"mimikatz.exe sekurlsa::logonpasswords\", \"exe_path\": \"C:\\\\Temp\\\\mk_x64.exe\"}}",
-        "ref": "detection:8",
-        "_dt": "2026-08-22 09:07:00+00:00"
-      },
-      {
         "ts": "2026-08-22T09:11:00+00:00",
         "kind": "detection",
         "severity": "critical",
         "title": "[SIGMA] Suspicious Reverse Shell Destination Ports",
         "detail": "{\"technique_id\": \"T1071.001\", \"summary\": {\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}}",
         "ref": "detection:4",
-        "_dt": "2026-08-22 09:11:00+00:00"
-      },
-      {
-        "ts": "2026-08-22T09:11:00+00:00",
-        "kind": "detection",
-        "severity": "critical",
-        "title": "[SIGMA] Suspicious Reverse Shell Destination Ports",
-        "detail": "{\"technique_id\": \"T1071.001\", \"summary\": {\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}}",
-        "ref": "detection:10",
         "_dt": "2026-08-22 09:11:00+00:00"
       },
       {
@@ -311,23 +259,10 @@
         "_dt": "2026-08-23 07:08:14+00:00"
       }
     ],
-    "total": 18,
+    "total": 13,
     "skew": []
   },
   "detections": [
-    {
-      "id": 10,
-      "host_id": 2,
-      "collection_id": "win-demo-net",
-      "rule_type": "sigma",
-      "rule_name": "Suspicious Reverse Shell Destination Ports",
-      "severity": "critical",
-      "technique_id": "T1071.001",
-      "summary": "{\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}",
-      "detected_at_utc": "2026-08-22T09:11:00+00:00",
-      "evidence_json": null,
-      "technique_name": "Web Protocols"
-    },
     {
       "id": 4,
       "host_id": 2,
@@ -339,20 +274,8 @@
       "summary": "{\"pid\": \"4100\", \"remote_ip\": \"198.51.100.23\", \"remote_port\": \"4444\", \"local_ip\": \"10.0.0.2\", \"local_port\": \"51000\", \"proto\": \"tcp\", \"process_name\": \"powershell.exe\"}",
       "detected_at_utc": "2026-08-22T09:11:00+00:00",
       "evidence_json": null,
-      "technique_name": "Web Protocols"
-    },
-    {
-      "id": 8,
-      "host_id": 2,
-      "collection_id": "win-demo-3",
-      "rule_type": "sigma",
-      "rule_name": "Credential Dumping Tool Mimikatz Execution",
-      "severity": "critical",
-      "technique_id": "T1003.001",
-      "summary": "{\"pid\": \"4103\", \"ppid\": \"4100\", \"name\": \"mimikatz.exe\", \"cmdline\": \"mimikatz.exe sekurlsa::logonpasswords\", \"exe_path\": \"C:\\\\Temp\\\\mk_x64.exe\"}",
-      "detected_at_utc": "2026-08-22T09:07:00+00:00",
-      "evidence_json": null,
-      "technique_name": "LSASS Memory"
+      "technique_name": "Web Protocols",
+      "tactic": "[{\"short\": \"command-and-control\", \"name\": \"Command and Control\"}]"
     },
     {
       "id": 2,
@@ -365,20 +288,8 @@
       "summary": "{\"pid\": \"4103\", \"ppid\": \"4100\", \"name\": \"mimikatz.exe\", \"cmdline\": \"mimikatz.exe sekurlsa::logonpasswords\", \"exe_path\": \"C:\\\\Temp\\\\mk_x64.exe\"}",
       "detected_at_utc": "2026-08-22T09:07:00+00:00",
       "evidence_json": null,
-      "technique_name": "LSASS Memory"
-    },
-    {
-      "id": 11,
-      "host_id": 2,
-      "collection_id": "win-demo-2",
-      "rule_type": "sigma",
-      "rule_name": "Scheduled Task Creation via Schtasks",
-      "severity": "medium",
-      "technique_id": "T1053.005",
-      "summary": "{\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn Updater /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}",
-      "detected_at_utc": "2026-08-22T09:05:00+00:00",
-      "evidence_json": null,
-      "technique_name": "Scheduled Task"
+      "technique_name": "LSASS Memory",
+      "tactic": "[{\"short\": \"credential-access\", \"name\": \"Credential Access\"}]"
     },
     {
       "id": 5,
@@ -391,20 +302,8 @@
       "summary": "{\"pid\": \"4102\", \"ppid\": \"4100\", \"name\": \"schtasks.exe\", \"cmdline\": \"schtasks.exe /create /tn Updater /tr cmd.exe /sc once\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\schtasks.exe\"}",
       "detected_at_utc": "2026-08-22T09:05:00+00:00",
       "evidence_json": null,
-      "technique_name": "Scheduled Task"
-    },
-    {
-      "id": 12,
-      "host_id": 2,
-      "collection_id": "win-demo-1",
-      "rule_type": "sigma",
-      "rule_name": "Account Discovery via Whoami",
-      "severity": "low",
-      "technique_id": "T1033",
-      "summary": "{\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}",
-      "detected_at_utc": "2026-08-22T09:03:00+00:00",
-      "evidence_json": null,
-      "technique_name": "System Owner/User Discovery"
+      "technique_name": "Scheduled Task",
+      "tactic": "[{\"short\": \"execution\", \"name\": \"Execution\"}, {\"short\": \"persistence\", \"name\": \"Persistence\"}, {\"short\": \"privilege-escalation\", \"name\": \"Privilege Escalation\"}]"
     },
     {
       "id": 6,
@@ -417,20 +316,8 @@
       "summary": "{\"pid\": \"4101\", \"ppid\": \"4100\", \"name\": \"whoami.exe\", \"cmdline\": \"whoami.exe /priv\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\whoami.exe\"}",
       "detected_at_utc": "2026-08-22T09:03:00+00:00",
       "evidence_json": null,
-      "technique_name": "System Owner/User Discovery"
-    },
-    {
-      "id": 9,
-      "host_id": 2,
-      "collection_id": "win-demo-0",
-      "rule_type": "sigma",
-      "rule_name": "PowerShell Encoded Command Execution",
-      "severity": "high",
-      "technique_id": "T1059.001",
-      "summary": "{\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgA\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}",
-      "detected_at_utc": "2026-08-22T09:01:00+00:00",
-      "evidence_json": null,
-      "technique_name": "PowerShell"
+      "technique_name": "System Owner/User Discovery",
+      "tactic": "[{\"short\": \"discovery\", \"name\": \"Discovery\"}]"
     },
     {
       "id": 3,
@@ -443,7 +330,8 @@
       "summary": "{\"pid\": \"4100\", \"ppid\": \"500\", \"name\": \"powershell.exe\", \"cmdline\": \"powershell.exe -nop -w hidden -enc SQBFAFgA\", \"exe_path\": \"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}",
       "detected_at_utc": "2026-08-22T09:01:00+00:00",
       "evidence_json": null,
-      "technique_name": "PowerShell"
+      "technique_name": "PowerShell",
+      "tactic": "[{\"short\": \"execution\", \"name\": \"Execution\"}]"
     }
   ],
   "ioc_hits": [],
@@ -505,5 +393,5 @@
       "manifest_sha256": "1a0ecde47f52ae987aba34e74777ac6b5298b6c1bddb71e68dba952b7b381bd9"
     }
   ],
-  "generated_at_utc": "2026-08-23T07:09:46+00:00"
+  "generated_at_utc": "2026-08-23T10:51:27+00:00"
 }

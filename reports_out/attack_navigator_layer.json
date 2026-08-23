@@ -29,53 +29,11 @@
   ],
   "techniques": [
     {
-      "techniqueID": "T1033",
-      "score": 57,
-      "enabled": true,
-      "showSubtechniques": true,
-      "tactic": "discovery"
-    },
-    {
-      "techniqueID": "T1053.005",
-      "score": 57,
-      "enabled": true,
-      "showSubtechniques": true,
-      "tactic": "execution"
-    },
-    {
-      "techniqueID": "T1053.005",
-      "score": 57,
-      "enabled": true,
-      "showSubtechniques": true,
-      "tactic": "persistence"
-    },
-    {
-      "techniqueID": "T1053.005",
-      "score": 57,
-      "enabled": true,
-      "showSubtechniques": true,
-      "tactic": "privilege-escalation"
-    },
-    {
       "techniqueID": "T1059.001",
-      "score": 57,
-      "enabled": true,
-      "showSubtechniques": true,
-      "tactic": "execution"
-    },
-    {
-      "techniqueID": "T1059.004",
-      "score": 43,
-      "enabled": true,
-      "showSubtechniques": true,
-      "tactic": "execution"
-    },
-    {
-      "techniqueID": "T1071.001",
       "score": 100,
       "enabled": true,
       "showSubtechniques": true,
-      "tactic": "command-and-control"
+      "tactic": "execution"
     }
   ]
 }
