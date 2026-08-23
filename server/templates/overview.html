@@ -1,48 +1,100 @@
 {% extends "base.html" %}
 {% block title %}Overview{% endblock %}
 {% block content %}
-<div class="row g-3 mb-4">
-  <div class="col-md-2"><div class="card card-metric sev-critical"><div class="card-body"><h3>{{ counts.critical }}</h3><span class="badge badge-critical">Critical</span></div></div></div>
-  <div class="col-md-2"><div class="card card-metric sev-high"><div class="card-body"><h3>{{ counts.high }}</h3><span class="badge badge-high">High</span></div></div></div>
-  <div class="col-md-2"><div class="card card-metric sev-medium"><div class="card-body"><h3>{{ counts.medium }}</h3><span class="badge badge-medium">Medium</span></div></div></div>
-  <div class="col-md-2"><div class="card card-metric sev-low"><div class="card-body"><h3>{{ counts.low }}</h3><span class="badge badge-low">Low</span></div></div></div>
-  <div class="col-md-2"><div class="card card-metric"><div class="card-body"><h3>{{ hosts }}</h3><span class="text-muted">Active endpoints</span></div></div></div>
-  <div class="col-md-2"><div class="card card-metric"><div class="card-body"><h3>{{ manifests }}</h3><span class="text-muted">Evidence collections</span></div></div></div>
-</div>
-<div class="row g-4">
-  <div class="col-lg-5">
-    <div class="card"><div class="card-header">Detections by severity</div><div class="card-body"><canvas id="sevChart" height="220"></canvas></div></div>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <div class="section-label">Command center</div>
+    <h4 class="mb-0">Security overview</h4>
   </div>
-  <div class="col-lg-7">
-    <div class="card">
-      <div class="card-header">Recent detections feed</div>
+  <span class="trend-chip trend-flat" id="trendChip">&ndash; monitoring</span>
+</div>
+
+<div class="row g-3 mb-4 stagger">
+  {% for sev in ['critical','high','medium','low'] %}
+  <div class="col-6 col-md-2">
+    <div class="card card-metric ator-card h-100">
+      <div class="card-body py-3">
+        <div class="kpi-value" data-count="{{ counts[sev] }}" data-kpi="{{ sev }}">{{ counts[sev] }}</div>
+        <span class="badge sev-badge badge-{{ sev }} mt-1">{{ sev }}</span>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  <div class="col-6 col-md-2">
+    <div class="card card-metric ator-card h-100"><div class="card-body py-3">
+      <div class="kpi-value" data-count="{{ hosts }}" data-kpi="hosts">{{ hosts }}</div>
+      <span class="text-muted small">active endpoints</span>
+    </div></div>
+  </div>
+  <div class="col-6 col-md-2">
+    <div class="card card-metric ator-card h-100"><div class="card-body py-3">
+      <div class="kpi-value" data-count="{{ manifests }}" data-kpi="manifests">{{ manifests }}</div>
+      <span class="text-muted small">evidence collections</span>
+    </div></div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-5 stagger">
+    <div class="card ator-card mb-4">
+      <div class="card-header">Detections by severity</div>
+      <div class="card-body chart-box">
+        <canvas id="sevChart" height="230"
+                data-counts='{"critical": {{ counts.critical }}, "high": {{ counts.high }}, "medium": {{ counts.medium }}, "low": {{ counts.low }}, "total": {{ total_dets }}}'></canvas>
+      </div>
+    </div>
+    <div class="card ator-card">
+      <div class="card-header">Detection activity - last 24h</div>
+      <div class="card-body chart-box">
+        <canvas id="trendChart" height="180" data-needs-fetch="1"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7 stagger">
+    <div class="card ator-card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Live detection feed</span>
+        <span class="header-live"><span class="pulse-dot is-live" id="streamDot"></span><span id="streamLabel">connecting...</span></span>
+      </div>
+      <div class="feed-panel" id="liveFeed" aria-live="polite" aria-label="Live detection feed">
+        {% for d in recent %}
+        <div class="feed-item sev-{{ d.severity }}">
+          <span class="feed-time">{{ d.detected_at_utc }}</span>
+          <span class="badge sev-badge badge-{{ d.severity }}">{{ d.severity }}</span>
+          <div>
+            <div class="feed-title">{{ d.rule_name }}</div>
+            <div class="feed-meta">{{ d.hostname }}{% if d.technique_id %} &middot; <span class="mono">{{ d.technique_id }}</span>{% endif %} &middot; {{ d.rule_type }}</div>
+          </div>
+        </div>
+        {% else %}
+        <div class="skeleton-row px-3 py-3">
+          <div class="skeleton mb-2" style="width:60%; height:12px;"></div>
+          <div class="skeleton mb-2" style="width:80%; height:10px;"></div>
+          <div class="skeleton" style="width:40%; height:10px;"></div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="card ator-card mt-4" data-interactive-empty="1">
+      <div class="card-header">Detection history</div>
       <div class="card-body p-0">
-        <table class="table table-sm table-hover mb-0 data">
-          <thead><tr><th>Time (UTC)</th><th>Host</th><th>Rule</th><th>Type</th><th>Severity</th><th>MITRE</th></tr></thead>
+        <table class="table table-sm table-hover mb-0 data ator-table" data-interactive>
+          <thead><tr><th data-sort>Time (UTC)</th><th data-sort>Host</th><th data-sort>Rule</th><th data-sort>Type</th><th data-sort>Severity</th><th data-sort>MITRE</th></tr></thead>
           <tbody>
           {% for d in recent %}
             <tr><td class="mono">{{ d.detected_at_utc }}</td><td>{{ d.hostname }}</td>
                 <td>{{ d.rule_name }}</td><td><span class="badge bg-secondary">{{ d.rule_type }}</span></td>
-                <td><span class="badge badge-{{ d.severity }}">{{ d.severity }}</span></td>
+                <td><span class="badge sev-badge badge-{{ d.severity }}">{{ d.severity }}</span></td>
                 <td class="mono">{{ d.technique_id or '-' }}</td></tr>
           {% else %}
-            <tr><td colspan="6" class="text-center text-muted py-4">No detections yet - run an agent collection or the E2E simulation.</td></tr>
+            <tr class="empty-hint-row"><td colspan="6"><div class="empty-hint">No detections yet - run an agent collection or the E2E simulation.</div></td></tr>
           {% endfor %}
           </tbody>
         </table>
       </div>
     </div>
+    <p class="kbd-hint mt-2">Tip: press <kbd class="kbd-hint-key">/</kbd> to search the focused table.</p>
   </div>
 </div>
-{% endblock %}
-{% block scripts %}
-<script>
-new Chart(document.getElementById('sevChart'), {
-  type: 'doughnut',
-  data: { labels: ['Critical','High','Medium','Low'],
-    datasets: [{ data: [{{ counts.critical }},{{ counts.high }},{{ counts.medium }},{{ counts.low }}],
-      backgroundColor: ['#c0392b','#d35400','#f39c12','#27ae60'] }] },
-  options: { plugins: { legend: { position: 'bottom' } } }
-});
-</script>
 {% endblock %}

@@ -1,0 +1,51 @@
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+}
+.status-pill .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.status-pill.online { color: var(--ator-low); background: rgba(30, 142, 90, 0.09); }
+.status-pill.revoked { color: #9aa4b2; background: rgba(154, 164, 178, 0.14); }
+
+.empty-hint {
+    text-align: center;
+    color: var(--ator-muted);
+    padding: 26px 10px;
+    font-size: 0.88rem;
+}
+
+.kbd-hint { color: var(--ator-muted); font-size: 0.74rem; }
+kbd.kbd-hint-key {
+    border: 1px solid var(--ator-border);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 0 5px;
+    background: #fff;
+    font-size: 0.72rem;
+}
+
+.section-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ator-muted);
+    margin-bottom: 8px;
+}
+
+.card-header .header-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 0.78rem;
+    color: var(--ator-muted);
+    font-weight: 500;
+}

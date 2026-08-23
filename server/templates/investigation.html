@@ -23,18 +23,18 @@
 
 <div class="row g-4">
   <div class="col-lg-7">
-    <div class="card mb-4">
+    <div class="card ator-card mb-4" data-interactive-empty="1">
       <div class="card-header">Unified timeline ({{ timeline.total }} events, {{ timeline.skew|length }} skew flags)</div>
-      <div class="card-body p-0" style="max-height:480px; overflow-y:auto;">
-        <table class="table table-sm table-striped mb-0 data">
-          <thead><tr><th>Time (UTC)</th><th>Kind</th><th>Title</th><th>Detail</th></tr></thead>
+      <div class="card-body p-0 feed-panel">
+        <table class="table table-sm table-striped mb-0 data ator-table" data-interactive data-interactive-empty="1">
+          <thead><tr><th data-sort>Time (UTC)</th><th data-sort>Kind</th><th data-sort>Title</th><th>Detail</th></tr></thead>
           <tbody>
           {% for e in timeline.events %}
             <tr><td class="mono text-nowrap">{{ e.ts or '(no ts)' }}</td>
                 <td><span class="badge bg-dark">{{ e.kind }}</span></td>
                 <td>{{ e.title }}</td><td class="mono text-truncate" style="max-width:260px;" title="{{ e.detail }}">{{ e.detail }}</td></tr>
           {% else %}
-            <tr><td colspan="4" class="text-center text-muted py-4">Select a host with data.</td></tr>
+            <tr class="empty-hint-row"><td colspan="4"><div class="empty-hint">Select a host with data.</div></td></tr>
           {% endfor %}
           </tbody>
         </table>

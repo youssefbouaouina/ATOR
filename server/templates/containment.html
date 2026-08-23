@@ -1,72 +1,103 @@
 {% extends "base.html" %}
 {% block title %}Containment{% endblock %}
 {% block content %}
-<h4>Containment <span class="badge bg-warning text-dark">DRY-RUN MODE</span></h4>
-<div class="alert alert-info small">Actions are logged and audited but never executed against endpoints. Approval workflow, cooldowns and audit trail are fully functional.</div>
+<div class="d-flex align-items-center gap-2 mb-3">
+  <h4 class="mb-0">Containment</h4>
+  <span class="badge bg-warning text-dark">DRY-RUN MODE</span>
+</div>
+<div class="alert alert-info small anim-rise">
+  Actions are logged and audited but never executed against endpoints. Approval workflow, cooldowns and audit trail are fully functional.
+</div>
 <div class="row g-4">
   <div class="col-lg-6">
-    <div class="card mb-4"><div class="card-header">Pending approvals</div><div class="card-body p-0">
-      <table class="table table-sm mb-0 data">
-        <thead><tr><th>Requested</th><th>Host</th><th>Detection</th><th>Sev</th><th>Decide</th></tr></thead>
-        <tbody>
-        {% for q in pending %}
-          <tr><td class="mono">{{ q.requested_at_utc }}</td><td>{{ q.hostname }}</td>
+    <div class="card ator-card mb-4">
+      <div class="card-header">Pending approvals <span class="badge bg-danger ms-1" id="pendingCount">{{ pending|length }}</span></div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 data ator-table" data-interactive data-interactive-empty="1">
+          <thead><tr><th data-sort>Requested</th><th data-sort>Host</th><th data-sort>Detection</th><th data-sort>Severity</th><th>Decide</th></tr></thead>
+          <tbody id="pendingBody">
+          {% for q in pending %}
+            <tr data-approval-id="{{ q.id }}">
+              <td class="mono">{{ q.requested_at_utc }}</td><td>{{ q.hostname }}</td>
               <td title="{{ q.summary }}">{{ q.rule_name }}</td>
-              <td><span class="badge badge-{{ q.severity }}">{{ q.severity }}</span></td>
+              <td><span class="badge sev-badge badge-{{ q.severity }}">{{ q.severity }}</span></td>
               <td>
-                <form method="post" action="/ui/approvals/{{ q.id }}/decide" class="d-flex gap-1">
-                  <button name="decision" value="approved" class="btn btn-sm btn-outline-danger">Approve</button>
-                  <button name="decision" value="rejected" class="btn btn-sm btn-outline-secondary">Reject</button>
+                <form method="post" action="/ui/approvals/{{ q.id }}/decide"
+                      data-ajax data-api="/api/v1/approvals/{{ q.id }}/decide"
+                      data-on-success="remove-row"
+                      data-success-message="Approval decided (dry-run logged)"
+                      class="d-flex gap-1" onsubmit="return false;">
+                  <input type="hidden" name="analyst" value="analyst-ui">
+                  <button type="submit" name="decision" value="approved" class="btn btn-sm btn-outline-danger" data-loading-label="...">Approve</button>
+                  <button type="submit" name="decision" value="rejected" class="btn btn-sm btn-outline-secondary" data-loading-label="...">Reject</button>
                 </form>
-              </td></tr>
-        {% else %}
-          <tr><td colspan="5" class="text-center text-muted py-3">Queue empty.</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div></div>
-    <div class="card"><div class="card-header">Recent decisions</div><div class="card-body p-0">
-      <table class="table table-sm mb-0 data">
-        <thead><tr><th>Time</th><th>Host</th><th>Detection</th><th>Status</th></tr></thead>
+              </td>
+            </tr>
+          {% else %}
+            <tr class="empty-hint-row"><td colspan="5"><div class="empty-hint">Queue empty.</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card ator-card"><div class="card-header">Recent decisions</div><div class="card-body p-0">
+      <table class="table table-sm mb-0 data ator-table" data-interactive data-interactive-empty="1">
+        <thead><tr><th data-sort>Time</th><th data-sort>Host</th><th data-sort>Detection</th><th data-sort>Status</th></tr></thead>
         <tbody>
         {% for q in decided %}
           <tr><td class="mono">{{ q.decided_at_utc }}</td><td>{{ q.hostname }}</td><td>{{ q.rule_name }}</td>
               <td><span class="badge {{ 'bg-danger' if q.status=='executed_dryrun' else 'bg-secondary' }}">{{ q.status }}</span></td></tr>
-        {% else %}<tr><td colspan="4" class="text-center text-muted py-3">No decisions yet.</td></tr>{% endfor %}
+        {% else %}<tr class="empty-hint-row"><td colspan="4"><div class="empty-hint">No decisions yet.</div></td></tr>{% endfor %}
         </tbody>
       </table>
     </div></div>
   </div>
   <div class="col-lg-6">
-    <div class="card mb-4"><div class="card-header">Create policy</div><div class="card-body">
-      <form method="post" action="/ui/policies" class="row g-2">
+    <div class="card ator-card mb-4"><div class="card-header">Create policy</div><div class="card-body">
+      <form method="post" action="/ui/policies" class="row g-2"
+            data-ajax data-api="/api/v1/policies"
+            data-on-success="reset" data-success-message="Policy saved">
         <div class="col-md-5"><input name="name" class="form-control form-control-sm" placeholder="Policy name" required></div>
         <div class="col-md-3">
-          <select name="min_severity" class="form-select form-select-sm">
+          <select name="min_severity" class="form-select form-select-sm" aria-label="Minimum severity">
             <option value="critical">&ge; critical</option><option value="high" selected>&ge; high</option>
             <option value="medium">&ge; medium</option><option value="low">&ge; low</option>
           </select>
         </div>
         <div class="col-md-2">
-          <select name="mode" class="form-select form-select-sm">
+          <select name="mode" class="form-select form-select-sm" aria-label="Policy mode">
             <option value="notify">notify</option><option value="approve">approve</option>
           </select>
         </div>
-        <div class="col-md-2"><button class="btn btn-primary btn-sm w-100">Save</button></div>
+        <div class="col-md-2"><button type="submit" class="btn btn-primary btn-sm w-100" data-loading-label="Save">Save</button></div>
         <div class="col-12"><input name="techniques" class="form-control form-control-sm mono" placeholder="Technique IDs comma-separated e.g. T1059.001,T1053.005 (optional)"></div>
       </form>
     </div></div>
-    <div class="card"><div class="card-header">Policies</div><div class="card-body p-0">
-      <table class="table table-sm mb-0 data">
-        <thead><tr><th>Name</th><th>Min severity</th><th>Mode</th><th>Techniques</th><th>Enabled</th></tr></thead>
+    <div class="card ator-card"><div class="card-header">Policies</div><div class="card-body p-0">
+      <table class="table table-sm mb-0 data ator-table" data-interactive data-interactive-empty="1">
+        <thead><tr><th data-sort>Name</th><th data-sort>Min severity</th><th data-sort>Mode</th><th data-sort>Techniques</th><th data-sort>Enabled</th></tr></thead>
         <tbody>
         {% for p in policies %}
           <tr><td>{{ p.name }}</td><td>{{ p.min_severity }}</td><td>{{ p.mode }}</td>
               <td class="mono small">{{ p.technique_ids or '-' }}</td><td>{{ 'yes' if p.enabled else 'no' }}</td></tr>
-        {% else %}<tr><td colspan="5" class="text-center text-muted py-3">No policies defined.</td></tr>{% endfor %}
+        {% else %}<tr class="empty-hint-row"><td colspan="5"><div class="empty-hint">No policies defined.</div></td></tr>{% endfor %}
         </tbody>
       </table>
     </div></div>
   </div>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.addEventListener("ator:action-success", function () {
+    var counter = document.getElementById("pendingCount");
+    var body = document.getElementById("pendingBody");
+    if (!counter || !body) return;
+    var remaining = 0;
+    body.querySelectorAll("tr[data-approval-id]").forEach(function (tr) {
+        if (tr.style.opacity !== "0") remaining++;
+    });
+    counter.textContent = String(remaining);
+});
+</script>
 {% endblock %}

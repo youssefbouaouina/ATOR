@@ -3,33 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dashboard-refresh-interval" content="5000">
 <title>ATOR DFIR - {% block title %}Overview{% endblock %}</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<style>
-  body { background:#f4f6f8; }
-  .navbar-brand span { color:#e74c3c; font-weight:700; }
-  .card-metric { border-left:5px solid #2c3e50; }
-  .sev-critical { border-left-color:#c0392b !important; }
-  .sev-high { border-left-color:#d35400 !important; }
-  .sev-medium { border-left-color:#f39c12 !important; }
-  .sev-low { border-left-color:#27ae60 !important; }
-  .badge-critical { background:#c0392b; }
-  .badge-high { background:#d35400; }
-  .badge-medium { background:#f39c12; }
-  .badge-low { background:#27ae60; }
-  .chain-step { display:inline-block; padding:6px 14px; margin:2px; border-radius:20px;
-                color:#fff; font-size:0.85rem; font-weight:600; }
-  .mono { font-family:Consolas,monospace; font-size:0.82em; }
-  table.data td, table.data th { font-size:0.86rem; }
-</style>
+<link rel="stylesheet" href="/static/css/dashboard.css">
+<link rel="stylesheet" href="/static/css/animations.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<script>window.ATOR = window.ATOR || {}; window.ATOR.refreshInterval = 5000;</script>
 </head>
-<body>
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+<body class="ator-theme">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark soc-nav mb-4">
   <div class="container-fluid">
-    <a class="navbar-brand" href="/">ATOR <span>DFIR</span></a>
-    <div class="collapse navbar-collapse">
-      <ul class="navbar-nav">
+    <a class="navbar-brand d-flex align-items-center" href="/">
+      <span class="pulse-dot is-live" id="globalDot" aria-hidden="true"></span>
+      ATOR <span class="brand-accent">&nbsp;DFIR</span>
+    </a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav"
+            aria-controls="mainNav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="mainNav">
+      <ul class="navbar-nav nav-underline">
         <li class="nav-item"><a class="nav-link {{ 'active' if page=='overview' }}" href="/">Overview</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if page=='investigation' }}" href="/investigation">Investigation</a></li>
         <li class="nav-item"><a class="nav-link {{ 'active' if page=='endpoints' }}" href="/endpoints">Endpoints</a></li>
@@ -38,13 +33,25 @@
         <li class="nav-item"><a class="nav-link {{ 'active' if page=='reports' }}" href="/reports">Reports</a></li>
       </ul>
     </div>
-    <span class="navbar-text text-light small">Containment mode: DRY-RUN</span>
+    <span class="navbar-text text-light small d-none d-md-inline-flex align-items-center gap-2">
+      <span class="pulse-dot is-live"></span> Containment: DRY-RUN
+    </span>
   </div>
 </nav>
-<main class="container-fluid px-4">
+<main class="container-fluid px-4 anim-fade">
 {% block content %}{% endblock %}
 </main>
-<footer class="text-center text-muted small my-4">ATOR DFIR Framework &middot; all timestamps UTC &middot; evidence manifests SHA-256 verified at ingestion</footer>
+<footer class="text-center ator-footer small my-4">
+  ATOR DFIR Framework &middot; all timestamps UTC &middot; evidence manifests SHA-256 verified at ingestion
+</footer>
+<div class="toast-stack" role="status" aria-live="polite"></div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/toast.js" defer></script>
+<script src="/static/js/ajax.js" defer></script>
+<script src="/static/js/tables.js" defer></script>
+<script src="/static/js/charts.js" defer></script>
+<script src="/static/js/realtime.js" defer></script>
+<script src="/static/js/dashboard.js" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

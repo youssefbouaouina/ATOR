@@ -1,9 +1,9 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests as http_requests
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -504,3 +504,100 @@ def export_navigator(conn=Depends(get_conn)):
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@app.get("/api/v1/stats/overview")
+def stats_overview(conn=Depends(get_conn)):
+    counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for r in conn.execute("SELECT severity, COUNT(*) AS n FROM detections GROUP BY severity"):
+        if r["severity"] in counts:
+            counts[r["severity"]] = r["n"]
+    total = sum(counts.values())
+    hosts_active = conn.execute("SELECT COUNT(*) AS n FROM hosts WHERE is_active=1").fetchone()["n"]
+    manifests = conn.execute("SELECT COUNT(*) AS n FROM evidence_manifests").fetchone()["n"]
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM approvals_queue WHERE status='pending'").fetchone()["n"]
+
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=23)).strftime("%Y-%m-%dT%H")
+    buckets = {}
+    for r in conn.execute(
+        "SELECT substr(detected_at_utc,1,13) AS h, COUNT(*) AS n FROM detections"
+        " WHERE detected_at_utc >= ? GROUP BY h",
+        (cutoff,),
+    ):
+        buckets[r["h"]] = r["n"]
+    trend = []
+    for i in range(23, -1, -1):
+        hr = (now - timedelta(hours=i)).strftime("%Y-%m-%dT%H")
+        trend.append({"hour": hr[11:] + ":00", "count": buckets.get(hr, 0)})
+    return {
+        "counts": counts,
+        "total": total,
+        "hosts_active": hosts_active,
+        "manifests": manifests,
+        "approvals_pending": pending,
+        "trend": trend,
+        "generated_at": now.isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/api/v1/stream/events")
+async def stream_events(request: Request, interval: float = 5.0, limit: int = 15):
+    from asyncio import sleep
+    from starlette.concurrency import run_in_threadpool
+
+    interval = max(2.0, min(interval, 60.0))
+    limit = max(1, min(limit, 50))
+
+    def _query(cursor):
+        c = database.connect()
+        try:
+            rows = c.execute(
+                """SELECT d.id, d.detected_at_utc, d.rule_name, d.rule_type, d.severity,
+                          d.technique_id, h.hostname
+                   FROM detections d JOIN hosts h ON h.id = d.host_id
+                   WHERE d.id > ? ORDER BY d.id ASC LIMIT ?""",
+                (cursor, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+    async def gen():
+        def _initial():
+            c = database.connect()
+            try:
+                rows = c.execute(
+                    """SELECT d.id, d.detected_at_utc, d.rule_name, d.rule_type, d.severity,
+                              d.technique_id, h.hostname
+                       FROM detections d JOIN hosts h ON h.id = d.host_id
+                       ORDER BY d.id DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                c.close()
+
+        rows = await run_in_threadpool(_initial)
+        rows.reverse()
+        last_id = 0
+        for r in rows:
+            last_id = max(last_id, r["id"])
+            yield f"data: {json.dumps(r)}\n\n"
+        yield ": stream-ready\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            new_rows = await run_in_threadpool(_query, last_id)
+            for r in new_rows:
+                last_id = max(last_id, r["id"])
+                yield f"data: {json.dumps(r)}\n\n"
+            yield f": heartbeat {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n\n"
+            await sleep(interval)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
