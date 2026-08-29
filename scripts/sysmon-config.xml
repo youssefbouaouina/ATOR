@@ -1,7 +1,75 @@
+<!--
+  ATOR DFIR Sysmon configuration (schema 4.90, tested against Sysmon64 v15.x)
+
+  Matched to the ATOR pipeline:
+    agent.collectors.logs reads the last N (max_events_per_source, default 300)
+    records of "Microsoft-Windows-Sysmon/Operational" and parses generically
+    (event_id + named Data fields land in payload_json.fields for the timeline),
+    so anything not logged here never reaches the server. Volume discipline
+    matters: keep the enabled set focused so the rolling window keeps the
+    interesting events instead of burying them in noise.
+
+  Enabled EIDs and why:
+    1  ProcessCreate        - cmdline/exe/sha256 evidence (T1059, T1053...)
+    3  NetworkConnect       - C2/beacon evidence, mirrors network collector
+    7  ImageLoad            - LOLBIN/injection evidence (noisy: system DLLs excluded below)
+    8  CreateRemoteThread   - injection techniques (T1055)
+    11 FileCreate           - droppers/artifacts written to disk
+    13 RegistryEvent(Value) - Run keys / service persistence (T1547/T1112)
+    22 DnsQuery             - domain-based detection (exclusions below trim NCSOCDN chatter)
+
+  Install / update on endpoint (admin):
+    Sysmon64.exe -accepteula -i sysmon-config.xml      (first time)
+    Sysmon64.exe -c sysmon-config.xml                  (update)
+  Verify (service name is Sysmon64, NOT Sysmon):
+    Get-Service Sysmon64 | Select Status,StartType
+-->
 <Sysmon schemaversion="4.90">
+  <HashAlgorithms>sha256</HashAlgorithms>
+  <CheckRevocation/>
   <EventFiltering>
+
+    <!-- EID 1: keep everything except console-host duplicate churn -->
     <ProcessCreate onmatch="exclude">
-      <Image condition="end with">C:\Windows\System32\conhost.exe</Image>
+      <Image condition="is">C:\Windows\System32\conhost.exe</Image>
+      <Image condition="begin with">C:\Program Files (x86)\Microsoft\EdgeUpdate\</Image>
     </ProcessCreate>
+
+    <!-- EID 3: allow all by default; drop loopback chatter -->
+    <NetworkConnect onmatch="exclude">
+      <SourceIp condition="is">127.0.0.1</SourceIp>
+      <DestinationIp condition="is">255.255.255.255</DestinationIp>
+    </NetworkConnect>
+
+    <!-- EID 7: OS/DLL catalog loading is pure noise; third-party loads are gold -->
+    <ImageLoad onmatch="exclude">
+      <ImageLoaded condition="begin with">C:\Windows\System32\</ImageLoaded>
+      <ImageLoaded condition="begin with">C:\Windows\SysWOW64\</ImageLoaded>
+      <ImageLoaded condition="begin with">C:\Windows\WinSxS\</ImageLoaded>
+      <Image condition="begin with">C:\Program Files\VMware\VMware Tools\</Image>
+    </ImageLoad>
+
+    <!-- EID 8: no exclusions (rare + high value) -->
+
+    <!-- EID 11: cut bulk churn from browser caches, AV/temp scans -->
+    <FileCreate onmatch="exclude">
+      <TargetFilename condition="contains">\AppData\Local\Temp\__PSScriptPolicyTest_</TargetFilename>
+      <TargetFilename condition="end with">.avb</TargetFilename>
+      <Image condition="begin with">C:\Program Files\Google\Chrome\Application\chrome.exe</Image>
+    </FileCreate>
+
+    <!-- EID 13: persistence-relevant value writes; drop background UI toggles -->
+    <RegistryEvent onmatch="exclude">
+      <TargetObject condition="end with">\MuiCache</TargetObject>
+      <TargetObject condition="begin with">HKU\.DEFAULT</TargetObject>
+    </RegistryEvent>
+
+    <!-- EID 22: exclude domains verified irrelevant in this lab -->
+    <DnsQuery onmatch="exclude">
+      <QueryName condition="end with">msftconnecttest.com</QueryName>
+      <QueryName condition="end with">ocsp.digicert.com</QueryName>
+      <QueryName condition="contains">tlsprober</QueryName>
+    </DnsQuery>
+
   </EventFiltering>
 </Sysmon>

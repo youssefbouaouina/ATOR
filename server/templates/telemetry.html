@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Telemetry{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+  <div class="col">
+    <h2 class="mb-0">Telemetry <span class="text-muted fs-6">/ live resource metrics</span></h2>
+  </div>
+  <div class="col-auto d-flex align-items-center gap-2">
+    <div class="pulse-dot is-live" id="streamDot" title="Connecting…"></div>
+    <span id="streamLabel" class="text-muted small">connecting…</span>
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">Options</button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li><label class="dropdown-item"><input type="checkbox" id="optPauseHidden" checked> Pause when tab hidden</label></li>
+        <li><hr class="dropdown-divider"/></li>
+        <li><label class="dropdown-item"><input type="checkbox" id="optAlerts" checked> Alert toasts</label></li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Filter bar -->
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <div class="row g-2">
+      <div class="col-md-3">
+        <label class="form-label small mb-1">Platform</label>
+        <select class="form-select form-select-sm" id="filterPlatform">
+          <option value="">All</option>
+          <option value="windows">Windows</option>
+          <option value="linux">Linux</option>
+          <option value="docker_host">Docker Host</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small mb-1">Device Type</label>
+        <select class="form-select form-select-sm" id="filterDevice">
+          <option value="">All</option>
+          <option value="laptop">Laptop</option>
+          <option value="desktop">Desktop</option>
+          <option value="server">Server</option>
+          <option value="docker">Container Host</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small mb-1">Hardware Tier</label>
+        <select class="form-select form-select-sm" id="filterTier">
+          <option value="">All</option>
+          <option value="low">Low</option>
+          <option value="mid">Mid</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small mb-1">Search</label>
+        <input type="text" class="form-control form-control-sm" id="filterHost" placeholder="Hostname…">
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Gauge cards grid -->
+<div class="text-center text-muted py-5" id="emptyState" style="display:none;">
+  <p class="mb-0">No endpoints match the current filters.</p>
+</div>
+<div class="row g-3" id="gaugeGrid"></div>
+
+<!-- Trends + Alerts -->
+<div class="row g-3 mt-2">
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Trends</h5>
+        <div class="d-flex gap-2">
+          <div class="btn-group btn-group-sm" role="group" id="metricChips">
+            <input type="radio" class="btn-check" name="metric" id="mCpu" value="cpu_pct" checked>
+            <label class="btn btn-outline-primary" for="mCpu">CPU %</label>
+            <input type="radio" class="btn-check" name="metric" id="mMem" value="mem_pct">
+            <label class="btn btn-outline-primary" for="mMem">MEM %</label>
+            <input type="radio" class="btn-check" name="metric" id="mNet" value="net_recv_kbps">
+            <label class="btn btn-outline-primary" for="mNet">Net ↓</label>
+            <input type="radio" class="btn-check" name="metric" id="mNetUp" value="net_sent_kbps">
+            <label class="btn btn-outline-primary" for="mNetUp">Net ↑</label>
+            <input type="radio" class="btn-check" name="metric" id="mGpu" value="gpu_util_pct">
+            <label class="btn btn-outline-primary" for="mGpu">GPU %</label>
+          </div>
+          <div class="btn-group btn-group-sm ms-2" role="group" id="windowChips">
+            <input type="radio" class="btn-check" name="window" id="w15" value="15" checked>
+            <label class="btn btn-outline-secondary" for="w15">15m</label>
+            <input type="radio" class="btn-check" name="window" id="w60" value="60">
+            <label class="btn btn-outline-secondary" for="w60">1h</label>
+            <input type="radio" class="btn-check" name="window" id="w360" value="360">
+            <label class="btn btn-outline-secondary" for="w360">6h</label>
+          </div>
+        </div>
+      </div>
+      <div class="card-body p-2">
+        <div style="height:280px;">
+          <canvas id="trendChart"></canvas>
+        </div>
+        <div class="form-check form-switch mt-2">
+          <input class="form-check-input" type="checkbox" id="multiHostToggle" checked>
+          <label class="form-check-label small" for="multiHostToggle">Overlay all selected hosts</label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">
+        <h5 class="mb-0">Recent Alerts <span class="badge bg-danger" id="alertCount">0</span></h5>
+      </div>
+      <div class="card-body p-2" style="max-height:300px; overflow:auto;">
+        <ul class="list-group list-group-flush" id="alertList">
+          <li class="list-group-item text-center text-muted small py-4" id="noAlerts">
+            No recent alerts
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/telemetry.js"></script>
+{% endblock %}

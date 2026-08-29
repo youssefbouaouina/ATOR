@@ -194,6 +194,45 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS resource_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER NOT NULL REFERENCES hosts(id),
+    sampled_at_utc TEXT NOT NULL,
+    cpu_pct REAL,
+    mem_used_mb REAL,
+    mem_pct REAL,
+    swap_pct REAL,
+    disk_read_kbps REAL,
+    disk_write_kbps REAL,
+    net_sent_kbps REAL,
+    net_recv_kbps REAL,
+    gpu_present INTEGER DEFAULT 0,
+    gpu_util_pct REAL,
+    gpu_mem_used_mb REAL,
+    battery_pct REAL,
+    battery_plugged INTEGER,
+    hw_tier TEXT CHECK (hw_tier IN ('low','mid','high','unknown')),
+    cpu_cores INTEGER,
+    mem_total_mb REAL,
+    anomaly INTEGER NOT NULL DEFAULT 0,
+    anomaly_json TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_res_host_time ON resource_samples(host_id, sampled_at_utc);
+CREATE INDEX IF NOT EXISTS ix_res_time ON resource_samples(sampled_at_utc);
+
+CREATE TABLE IF NOT EXISTS resource_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER NOT NULL REFERENCES hosts(id),
+    ts_utc TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    value REAL NOT NULL,
+    baseline REAL,
+    message TEXT,
+    severity TEXT NOT NULL CHECK (severity IN ('critical','high','medium','low')),
+    acknowledged INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_res_alerts_host_time ON resource_alerts(host_id, ts_utc);
 """
 
 
@@ -228,3 +267,24 @@ def audit(conn, actor, action, details=None):
 def now_iso():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def prune_old_resource_samples(conn, hours=None):
+    """Delete resource samples and alerts older than retention window.
+    Default 72 hours (configurable via ATOR_RES_RETENTION_HOURS).
+    Triggered opportunistically; safe to call frequently."""
+    from datetime import datetime, timedelta, timezone
+    if hours is None:
+        import os
+        hours = int(os.environ.get("ATOR_RES_RETENTION_HOURS", "72"))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff_iso = cutoff.isoformat(timespec="seconds")
+    conn.execute(
+        "DELETE FROM resource_samples WHERE sampled_at_utc < ?",
+        (cutoff_iso,),
+    )
+    conn.execute(
+        "DELETE FROM resource_alerts WHERE ts_utc < ?",
+        (cutoff_iso,),
+    )
+    conn.commit()

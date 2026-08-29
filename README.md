@@ -35,8 +35,12 @@ python -m venv .venv
 .venv\Scripts\python -m server.app          # http://127.0.0.1:8000
 
 # terminal 2 - enroll an endpoint & collect once
-$env:ATOR_SERVER_URL="http://127.0.0.1:8000"
-.venv\Scripts\python scripts\linux_enroll_once.py   # works on Windows too
+$env:ATOR_SERVER_URL="http://127.0.0.1:8000"    # wins over agent/config.json
+.venv\Scripts\python -m agent.agent enroll
+.venv\Scripts\python -m agent.agent once        # continuous: -m agent.agent loop
+
+# remote endpoint instead? package it:
+.venv\Scripts\powershell -File scripts\deploy_agent.ps1 -Mode package
 ```
 
 Open the dashboard: `http://127.0.0.1:8000`
@@ -45,7 +49,7 @@ Open the dashboard: `http://127.0.0.1:8000`
 
 | Check | Result |
 |---|---|
-| Unit + integration tests (`pytest`) | 30/30 PASS |
+| Unit + integration tests (`pytest`) | 34/34 PASS |
 | Full E2E simulation (`run_e2e.py`) | 20/20 PASS |
 | Real Windows collection → detection → PDF | PASS |
 | Real Ubuntu (WSL) collection (34 proc, 582 log events, cron persistence) | PASS |

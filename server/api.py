@@ -49,6 +49,30 @@ class IocRequest(BaseModel):
     description: str | None = None
 
 
+class ResourceSampleIn(BaseModel):
+    sampled_at_utc: str | None = None
+    cpu_pct: float | None = None
+    mem_used_mb: float | None = None
+    mem_pct: float | None = None
+    swap_pct: float | None = None
+    disk_read_kbps: float | None = None
+    disk_write_kbps: float | None = None
+    net_sent_kbps: float | None = None
+    net_recv_kbps: float | None = None
+    gpu_present: int | None = 0
+    gpu_util_pct: float | None = None
+    gpu_mem_used_mb: float | None = None
+    battery_pct: float | None = None
+    battery_plugged: int | None = None
+    hw_tier: str | None = None
+    cpu_cores: int | None = None
+    mem_total_mb: float | None = None
+
+
+class SamplesRequest(BaseModel):
+    samples: list[ResourceSampleIn]
+
+
 app = FastAPI(title="ATOR DFIR Framework", version="1.0.0")
 
 
@@ -593,6 +617,356 @@ async def stream_events(request: Request, interval: float = 5.0, limit: int = 15
             for r in new_rows:
                 last_id = max(last_id, r["id"])
                 yield f"data: {json.dumps(r)}\n\n"
+            yield f": heartbeat {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n\n"
+            await sleep(interval)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# =============================================================================
+# RESOURCE TELEMETRY ENDPOINTS
+# =============================================================================
+
+# Anomaly detection thresholds (can be overridden via env)
+# dir: "high" fires when value >= abs; "low" fires when value <= abs
+_RESOURCE_THRESHOLDS = {
+    "cpu_pct": {"abs": 90.0, "z": 3.0, "sev": "high", "dir": "high"},
+    "mem_pct": {"abs": 92.0, "z": 3.0, "sev": "high", "dir": "high"},
+    "swap_pct": {"abs": 85.0, "z": 3.0, "sev": "medium", "dir": "high"},
+    "disk_read_kbps": {"abs": 50000.0, "z": 3.0, "sev": "medium", "dir": "high"},
+    "disk_write_kbps": {"abs": 50000.0, "z": 3.0, "sev": "medium", "dir": "high"},
+    "net_sent_kbps": {"abs": 20000.0, "z": 3.0, "sev": "medium", "dir": "high"},
+    "net_recv_kbps": {"abs": 20000.0, "z": 3.0, "sev": "medium", "dir": "high"},
+    "gpu_util_pct": {"abs": 95.0, "z": 3.0, "sev": "medium", "dir": "high"},
+    "battery_pct": {"abs": 15.0, "z": 3.0, "sev": "high", "dir": "low"},
+}
+_ALERT_COOLDOWN_S = 120  # per host+metric
+
+
+def _check_resource_anomalies(conn, host_id: int, sample: dict) -> list[dict]:
+    """Check sample against rolling baseline + absolute thresholds.
+    Returns list of alert dicts to insert."""
+    import statistics
+    alerts = []
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cooldown_cutoff = datetime.now(timezone.utc) - timedelta(seconds=_ALERT_COOLDOWN_S)
+    cooldown_iso = cooldown_cutoff.isoformat(timespec="seconds")
+
+    for metric, thresh in _RESOURCE_THRESHOLDS.items():
+        val = sample.get(metric)
+        if val is None:
+            continue
+        low_dir = thresh.get("dir") == "low"
+
+        # Check absolute threshold (direction-aware)
+        abs_trigger = (val <= thresh["abs"]) if low_dir else (val >= thresh["abs"])
+
+        # Rolling baseline from last 20 samples
+        rows = conn.execute(
+            f"SELECT {metric} FROM resource_samples WHERE host_id=? AND {metric} IS NOT NULL ORDER BY id DESC LIMIT 20",
+            (host_id,),
+        ).fetchall()
+        vals = [r[0] for r in rows if r[0] is not None]
+
+        stat_trigger = False
+        baseline = None
+        if len(vals) >= 10:
+            try:
+                mean = statistics.mean(vals)
+                stdev = statistics.stdev(vals) if len(vals) > 1 else 0.0
+                baseline = mean
+                # Avoid tiny stdev causing false positives
+                if stdev < 1.0:
+                    stdev = 1.0
+                if low_dir:
+                    stat_trigger = val <= mean - thresh["z"] * stdev
+                else:
+                    stat_trigger = val >= mean + thresh["z"] * stdev
+            except Exception:
+                pass
+
+        if abs_trigger or stat_trigger:
+            # Check cooldown: has same metric alerted recently for this host?
+            recent = conn.execute(
+                "SELECT 1 FROM resource_alerts WHERE host_id=? AND metric=? AND ts_utc > ? LIMIT 1",
+                (host_id, metric, (datetime.now(timezone.utc) - timedelta(seconds=_ALERT_COOLDOWN_S)).isoformat(timespec="seconds")),
+            ).fetchone()
+            if recent:
+                continue  # still in cooldown
+
+            if abs_trigger and stat_trigger:
+                sev = thresh["sev"]
+            elif abs_trigger:
+                sev = "medium" if thresh["sev"] == "high" else "low"
+            else:
+                sev = "low"
+
+            msg = f"{metric} = {val:.1f}"
+            if baseline is not None:
+                msg += f" (baseline {baseline:.1f})"
+            arrow = "<=" if low_dir else ">="
+            if abs_trigger:
+                msg += f" {arrow} absolute {_RESOURCE_THRESHOLDS[metric]['abs']}"
+            if stat_trigger:
+                sig = "-" if low_dir else "+"
+                msg += f" {arrow} baseline {sig} {thresh['z']}σ"
+
+            alerts.append({
+                "host_id": host_id,
+                "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "metric": metric,
+                "value": float(val),
+                "baseline": baseline,
+                "message": msg,
+                "severity": sev,
+            })
+    return alerts
+
+
+def _maybe_prune_resources(conn):
+    """Opportunistic pruning: every ~100th insert triggers a prune."""
+    cnt = conn.execute("SELECT value FROM kv WHERE key='res_insert_count'").fetchone()
+    cnt = int(cnt["value"]) if cnt else 0
+    cnt += 1
+    if cnt % 100 == 0:
+        database.prune_old_resource_samples(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO kv (key, value) VALUES ('res_insert_count', ?)",
+        (str(cnt),),
+    )
+
+
+@app.post("/api/v1/ingest/resources", status_code=202)
+def ingest_resources(body: SamplesRequest, ctx=Depends(auth_host)):
+    conn = ctx["conn"]
+    host = ctx["host"]
+    samples = [s.model_dump() for s in body.samples]
+    if not samples:
+        raise HTTPException(status_code=400, detail="no samples provided")
+    # Limit batch size
+    if len(samples) > 24:
+        raise HTTPException(status_code=400, detail="too many samples in batch (max 24)")
+
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    alerts_all = []
+
+    for s in samples:
+        ts = s.get("sampled_at_utc") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Insert sample
+        conn.execute(
+            """INSERT INTO resource_samples (
+                host_id, sampled_at_utc, cpu_pct, mem_used_mb, mem_pct, swap_pct,
+                disk_read_kbps, disk_write_kbps, net_sent_kbps, net_recv_kbps,
+                gpu_present, gpu_util_pct, gpu_mem_used_mb,
+                battery_pct, battery_plugged, hw_tier, cpu_cores, mem_total_mb,
+                anomaly, anomaly_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                host["id"],
+                ts,
+                s.get("cpu_pct"),
+                s.get("mem_used_mb"),
+                s.get("mem_pct"),
+                s.get("swap_pct"),
+                s.get("disk_read_kbps"),
+                s.get("disk_write_kbps"),
+                s.get("net_sent_kbps"),
+                s.get("net_recv_kbps"),
+                s.get("gpu_present", 0),
+                s.get("gpu_util_pct"),
+                s.get("gpu_mem_used_mb"),
+                s.get("battery_pct"),
+                s.get("battery_plugged"),
+                s.get("hw_tier"),
+                s.get("cpu_cores"),
+                s.get("mem_total_mb"),
+                0,  # anomaly (set below if any)
+                None,
+            ),
+        )
+        sample_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # Anomaly check
+        alerts = _check_resource_anomalies(conn, host["id"], s)
+        if alerts:
+            conn.execute(
+                "UPDATE resource_samples SET anomaly=1, anomaly_json=? WHERE id=?",
+                (json.dumps([a["message"] for a in alerts]), sample_id),
+            )
+            for a in alerts:
+                conn.execute(
+                    """INSERT INTO resource_alerts (host_id, ts_utc, metric, value, baseline, message, severity)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (a["host_id"], a["ts_utc"], a["metric"], a["value"], a["baseline"], a["message"], a["severity"]),
+                )
+            alerts_all.extend(alerts)
+
+    _maybe_prune_resources(conn)
+    conn.commit()
+    database.audit(conn, f"host:{host['hostname']}", "resources_ingested", {"count": len(samples), "alerts": len(alerts_all)})
+    return {"status": "accepted", "count": len(samples), "alerts": len(alerts_all)}
+
+
+@app.get("/api/v1/resources/latest")
+def resources_latest(conn=Depends(get_conn)):
+    """Latest resource sample per active host."""
+    rows = conn.execute(
+        """SELECT h.id, h.hostname, h.os_type, h.docker_engine_flag, h.last_seen_utc,
+                  s.sampled_at_utc, s.cpu_pct, s.mem_used_mb, s.mem_pct, s.swap_pct,
+                  s.disk_read_kbps, s.disk_write_kbps, s.net_sent_kbps, s.net_recv_kbps,
+                  s.gpu_present, s.gpu_util_pct, s.gpu_mem_used_mb,
+                  s.battery_pct, s.battery_plugged, s.hw_tier, s.cpu_cores, s.mem_total_mb,
+                  s.anomaly
+           FROM hosts h
+           LEFT JOIN resource_samples s ON s.id = (
+               SELECT MAX(id) FROM resource_samples WHERE host_id = h.id
+           )
+           WHERE h.is_active=1
+           ORDER BY h.hostname"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        # compute staleness (datetime/timezone are module-level imports)
+        if d.get("sampled_at_utc"):
+            try:
+                ts = datetime.fromisoformat(str(d["sampled_at_utc"]).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - ts).total_seconds()
+                d["stale"] = age > 60  # > 60s = stale
+            except Exception:
+                d["stale"] = True
+        else:
+            d["stale"] = True
+        out.append(d)
+    return {"hosts": out, "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@app.get("/api/v1/resources/history")
+def resources_history(
+    host_id: int,
+    minutes: int = 30,
+    metrics: str = "cpu_pct,mem_pct,net_recv_kbps,net_sent_kbps",
+    limit: int = 500,
+    conn=Depends(get_conn),
+):
+    """Time-series history for charts. Returns up to `limit` points."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    metric_list = [m.strip() for m in metrics.split(",") if m.strip()]
+    allowed = {"cpu_pct", "mem_pct", "mem_used_mb", "swap_pct",
+               "disk_read_kbps", "disk_write_kbps", "net_sent_kbps", "net_recv_kbps",
+               "gpu_util_pct", "battery_pct"}
+    metric_list = [m for m in metric_list if m in allowed]
+    if not metric_list:
+        metric_list = ["cpu_pct", "mem_pct", "net_recv_kbps", "net_sent_kbps"]
+    cols = ", ".join(metric_list)
+    rows = conn.execute(
+        f"SELECT sampled_at_utc, {cols} FROM resource_samples WHERE host_id=? AND sampled_at_utc >= ? ORDER BY id ASC",
+        (host_id, cutoff),
+    ).fetchall()
+    # Downsample to `limit` points if needed
+    if len(rows) > limit:
+        step = len(rows) / limit
+        rows = [rows[int(i * step)] for i in range(limit)]
+    return {"host_id": host_id, "points": [dict(r) for r in rows]}
+
+
+@app.get("/api/v1/resources/alerts")
+def resources_alerts(
+    host_id: int | None = None,
+    limit: int = 50,
+    conn=Depends(get_conn),
+):
+    """Recent resource alerts."""
+    sql = "SELECT a.*, h.hostname FROM resource_alerts a JOIN hosts h ON h.id=a.host_id"
+    params = []
+    if host_id is not None:
+        sql += " WHERE a.host_id=?"
+        params.append(host_id)
+    sql += " ORDER BY a.ts_utc DESC LIMIT ?"
+    params.append(min(limit, 200))
+    rows = conn.execute(sql, params).fetchall()
+    return {"alerts": [dict(r) for r in rows]}
+
+
+@app.get("/api/v1/stream/resources")
+async def stream_resources(request: Request, interval: float = 5.0, limit: int = 15):
+    """SSE stream: {samples: [...], alerts: [...]} frames."""
+    from asyncio import sleep
+    from starlette.concurrency import run_in_threadpool
+
+    interval = max(2.0, min(interval, 60.0))
+    limit = max(1, min(limit, 50))
+
+    def _query(cursor):
+        c = database.connect()
+        try:
+            rows = c.execute(
+                """SELECT s.*, h.hostname, h.os_type, h.docker_engine_flag
+                   FROM resource_samples s JOIN hosts h ON h.id=s.host_id
+                   WHERE s.id > ? ORDER BY s.id ASC LIMIT ?""",
+                (cursor, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+    def _alert_query(cursor):
+        c = database.connect()
+        try:
+            rows = c.execute(
+                """SELECT a.*, h.hostname FROM resource_alerts a
+                   JOIN hosts h ON h.id=a.host_id
+                   WHERE a.id > ? ORDER BY a.id ASC LIMIT ?""",
+                (cursor, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+    async def gen():
+        def _initial():
+            c = database.connect()
+            try:
+                # latest sample per host
+                rows = c.execute(
+                    """SELECT s.*, h.hostname, h.os_type, h.docker_engine_flag
+                       FROM resource_samples s JOIN hosts h ON h.id=s.host_id
+                       WHERE s.id IN (
+                           SELECT MAX(id) FROM resource_samples GROUP BY host_id
+                       )"""
+                ).fetchall()
+                alerts = c.execute(
+                    """SELECT a.*, h.hostname FROM resource_alerts a
+                       JOIN hosts h ON h.id=a.host_id
+                       ORDER BY a.id DESC LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+                return [dict(r) for r in rows], [dict(r) for r in alerts[::-1]]
+            finally:
+                c.close()
+
+        samples, alerts = await run_in_threadpool(_initial)
+        last_sample_id = max((s["id"] for s in samples), default=0)
+        last_alert_id = max((a["id"] for a in alerts), default=0)
+        for s in samples:
+            yield f"data: {json.dumps({'samples': [s], 'alerts': []})}\n\n"
+        for a in alerts:
+            yield f"data: {json.dumps({'samples': [], 'alerts': [a]})}\n\n"
+        yield ": stream-ready\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            new_samples = await run_in_threadpool(_query, last_sample_id)
+            new_alerts = await run_in_threadpool(_alert_query, last_alert_id)
+            for s in new_samples:
+                last_sample_id = max(last_sample_id, s["id"])
+                yield f"data: {json.dumps({'samples': [s], 'alerts': []})}\n\n"
+            for a in new_alerts:
+                last_alert_id = max(last_alert_id, a["id"])
+                yield f"data: {json.dumps({'samples': [], 'alerts': [a]})}\n\n"
             yield f": heartbeat {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n\n"
             await sleep(interval)
 

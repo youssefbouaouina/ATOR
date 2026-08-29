@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import sys
+import uuid
 
 AGENT_VERSION = "1.0.0"
 
@@ -14,6 +16,8 @@ DEFAULT_CONFIG = {
     "max_file_bytes": 5242880,
     "enable_local_yara": True,
     "collection_interval_seconds": 60,
+    "resource_interval_seconds": 15,
+    "enable_gpu_probe": True,
 }
 
 
@@ -27,6 +31,9 @@ def load_config(config_path=None):
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as fh:
             cfg.update(json.load(fh))
+    env_url = os.environ.get("ATOR_SERVER_URL")
+    if env_url:
+        cfg["server_url"] = env_url
     return cfg
 
 
@@ -50,11 +57,18 @@ COLLECTOR_ORDER_VOLATILITY_FIRST = [
     "logs",
     "files_triage",
     "containers",
+    "resources",
 ]
 
 
-def build_manifest(collection_id, started_at, finished_at, artifacts):
+try:
     from server.security import sha256_bytes
+except ImportError:
+    def sha256_bytes(data):
+        return hashlib.sha256(data).hexdigest()
+
+
+def build_manifest(collection_id, started_at, finished_at, artifacts):
     entries = []
     order = []
     for name in COLLECTOR_ORDER_VOLATILITY_FIRST:
@@ -106,15 +120,6 @@ def run_collection():
     return {"manifest": manifest, "artifacts": artifacts}
 
 
-def spool_payload(cfg, payload):
-    os.makedirs(cfg["spool_dir"], exist_ok=True)
-    cid = payload["manifest"]["collection_id"]
-    path = os.path.join(cfg["spool_dir"], f"{cid}.json")
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-    return path
-
-
 def send_payload(cfg, payload):
     import requests
     url = cfg["server_url"].rstrip("/") + "/api/v1/ingest"
@@ -128,6 +133,40 @@ def send_payload(cfg, payload):
     return resp
 
 
+def _headers(cfg):
+    return {
+        "Authorization": "Bearer " + cfg.get("api_key", ""),
+        "X-Client-ID": cfg.get("client_id", ""),
+        "Content-Type": "application/json",
+    }
+
+
+def send_resources(cfg, samples):
+    """Lightweight telemetry POST to the dedicated resources endpoint."""
+    import requests
+    url = cfg["server_url"].rstrip("/") + "/api/v1/ingest/resources"
+    resp = requests.post(
+        url, json={"samples": samples}, headers=_headers(cfg), timeout=15,
+    )
+    resp.raise_for_status()
+    return resp
+
+
+def spool_payload(cfg, payload, target="artifacts"):
+    os.makedirs(cfg["spool_dir"], exist_ok=True)
+    cid = (payload.get("manifest") or {}).get("collection_id") or str(uuid.uuid4())
+    path = os.path.join(cfg["spool_dir"], f"{cid}.json")
+    wrapper = {"target": target}
+    if target == "resources":
+        wrapper["payload"] = payload
+    else:
+        # legacy shape: bare ingest payload at top level
+        wrapper.update(payload)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(wrapper, fh)
+    return path
+
+
 def flush_spool(cfg):
     sent = 0
     if not os.path.isdir(cfg["spool_dir"]):
@@ -138,8 +177,13 @@ def flush_spool(cfg):
         path = os.path.join(cfg["spool_dir"], fname)
         try:
             with open(path, "r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-            send_payload(cfg, payload)
+                data = json.load(fh)
+            target = data.get("target")
+            if target == "resources":
+                send_resources(cfg, data["payload"]["samples"])
+            else:
+                # legacy/unwrapped files go to the artifact ingest endpoint
+                send_payload(cfg, {k: v for k, v in data.items() if k != "target"})
             os.remove(path)
             sent += 1
         except Exception:
@@ -152,8 +196,8 @@ def enroll(cfg):
     url = cfg["server_url"].rstrip("/") + "/api/v1/enroll"
     body = {
         "hostname": get_hostname(),
-        "os_type": ("docker_host" if has_docker_socket() else get_os_type()),
-        "docker_engine_flag": 1 if has_docker_socket() else 0,
+        "os_type": get_os_type(),
+        "docker_engine_flag": 1 if has_docker_engine() else 0,
         "agent_version": AGENT_VERSION,
     }
     resp = requests.post(url, json=body, timeout=30)
@@ -166,7 +210,7 @@ def enroll(cfg):
     return data
 
 
-def has_docker_socket():
+def has_docker_engine():
     import shutil
     import subprocess
     sock_paths = ["/var/run/docker.sock"]
@@ -184,7 +228,21 @@ def has_docker_socket():
     return False
 
 
+def run_resource_sample(cfg):
+    """Collect a single lightweight resource sample and send it."""
+    sample = dispatch("resources")
+    if not sample:
+        return False
+    try:
+        send_resources(cfg, sample)
+        return True
+    except Exception:
+        spool_payload(cfg, {"samples": sample}, target="resources")
+        return False
+
+
 def main():
+    import time
     cfg = load_config()
     if len(sys.argv) > 1 and sys.argv[1] == "enroll":
         print(json.dumps(enroll(cfg), indent=2))
@@ -200,18 +258,34 @@ def main():
             print(json.dumps({"status": "spooled", "reason": str(exc)}))
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == "loop":
-        import time
+        interval = max(5, int(cfg.get("collection_interval_seconds", 60)))
+        r_interval = max(5, int(cfg.get("resource_interval_seconds", 15)))
+        full_due = time.time()
+        res_due = time.time()
         while True:
+            now = time.time()
+            # flush any spooled items first
             flush_spool(cfg)
-            payload = run_collection()
-            try:
-                send_payload(cfg, payload)
-                status = "sent"
-            except Exception:
-                spool_payload(cfg, payload)
-                status = "spooled"
-            print(f"[{payload['manifest']['finished_at_utc']}] {status}", flush=True)
-            time.sleep(int(cfg.get("collection_interval_seconds", 60)))
+            did_work = False
+            if res_due <= now:
+                run_resource_sample(cfg)
+                res_due = now + r_interval
+                did_work = True
+            if full_due <= now:
+                payload = run_collection()
+                try:
+                    send_payload(cfg, payload)
+                    status = "sent"
+                except Exception:
+                    spool_payload(cfg, payload)
+                    status = "spooled"
+                print(f"[{payload['manifest']['finished_at_utc']}] {status}", flush=True)
+                full_due = now + interval
+                did_work = True
+            if not did_work:
+                # sleep to the nearest due time, capped at 30s
+                wait = min(full_due, res_due) - now
+                time.sleep(max(0.5, min(wait, 30)))
         return 0
     print("usage: python -m agent.agent [enroll|once|loop]")
     return 1

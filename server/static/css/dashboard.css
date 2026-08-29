@@ -306,3 +306,28 @@ th.sortable.sorted-desc::after { content: " \2193"; opacity: 1; }
 
 .mono { font-family: Consolas, monospace; font-size: 0.82em; }
 footer.ator-footer { color: var(--ator-muted); }
+
+/* ---- Telemetry gauges (conic-gradient rings) ---- */
+.gauge-card { cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
+.gauge-card:hover { box-shadow: 0 0 0 2px rgba(13,110,253,.25); }
+.gauge-wrap { text-align: center; padding: .25rem 0; }
+.gauge-wrap.stale { opacity: .45; }
+.gauge-ring {
+  --val: 0deg; --c: #198754;
+  width: 74px; height: 74px; margin: 0 auto; border-radius: 50%;
+  background: conic-gradient(var(--c) var(--val), rgba(108,117,125,.18) 0);
+  display: flex; align-items: center; justify-content: center;
+}
+.gauge-center {
+  width: 58px; height: 58px; border-radius: 50%;
+  background: var(--bs-body-bg, #fff);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  line-height: 1;
+}
+.gauge-value { font-size: .95rem; }
+.gauge-unit { font-size: .62rem; color: #6c757d; }
+.gauge-label { font-weight: 600; letter-spacing: .04em; }
+.gauge-meta { margin-top: 2px; }
+@media (prefers-color-scheme: dark) {
+  .gauge-center { background: #1a1d20; }
+}

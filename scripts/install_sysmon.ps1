@@ -10,4 +10,7 @@ if (-not (Test-Path $dest)) {
 }
 Write-Host "Installing/Updating Sysmon with ATOR DFIR config..."
 & $dest -accepteula -i $config
-Write-Host "Done. Verify with: Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 5"
+Write-Host "Done."
+# NOTE: the installed service is named Sysmon64 (not 'Sysmon').
+Get-Service Sysmon64 | Select-Object Status, StartType, Name, DisplayName
+Write-Host "Event check: Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational' -MaxEvents 5"

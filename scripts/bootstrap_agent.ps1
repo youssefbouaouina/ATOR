@@ -6,7 +6,7 @@ $root = Split-Path -Parent $PSScriptRoot
 
 if (-not (Test-Path (Join-Path $root ".venv\Scripts\python.exe"))) {
     python -m venv (Join-Path $root ".venv")
-    & (Join-Path $root ".venv\Scripts\pip.exe") install -q -r (Join-Path $root "requirements.txt")
+    & (Join-Path $root ".venv\Scripts\pip.exe") install -q -r (Join-Path $root "agent\requirements.txt")
 }
 $py = Join-Path $root ".venv\Scripts\python.exe"
 Push-Location $root

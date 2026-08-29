@@ -200,3 +200,14 @@ def register_ui(target_app):
         conn.commit()
         conn.close()
         return RedirectResponse("/intel", status_code=303)
+
+    @target_app.get("/telemetry", response_class=HTMLResponse)
+    def telemetry(request: Request, conn=Depends(database.connect)):
+        """Resource telemetry dashboard: live gauges, trends, alerts."""
+        hosts = [dict(r) for r in conn.execute(
+            "SELECT id, hostname, os_type, docker_engine_flag FROM hosts WHERE is_active=1 ORDER BY hostname"
+        )]
+        conn.close()
+        return tpl.TemplateResponse(request, "telemetry.html", {
+            "hosts": hosts, "page": "telemetry",
+        })

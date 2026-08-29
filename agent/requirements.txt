@@ -1,0 +1,5 @@
+requests>=2.31
+psutil>=5.9
+# Optional collectors (imports are guarded in agent.collectors.logs / files_triage)
+python-evtx>=0.7
+yara-python>=4.5

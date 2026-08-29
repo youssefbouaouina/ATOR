@@ -1,0 +1,21 @@
+[Unit]
+Description=ATOR DFIR Endpoint Agent (continuous collection)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust install dir if you deployed elsewhere.
+WorkingDirectory=/opt/ator-agent
+ExecStart=/opt/ator-agent/.venv/bin/python -m agent.agent loop
+# Server URL can be forced here (wins over config.json):
+Environment=ATOR_SERVER_URL=http://192.168.50.1:8000
+Restart=always
+RestartSec=30
+StartLimitBurst=0
+Nice=10
+CPUQuota=20%
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

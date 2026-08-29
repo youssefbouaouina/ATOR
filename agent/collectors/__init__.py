@@ -1,4 +1,4 @@
-from agent.collectors import network, processes, persistence, logs, files_triage, docker_host
+from agent.collectors import network, processes, persistence, logs, files_triage, docker_host, resources
 
 registry = {
     "network": network.collect,
@@ -7,4 +7,5 @@ registry = {
     "logs": logs.collect,
     "files_triage": files_triage.collect,
     "containers": docker_host.collect,
+    "resources": resources.collect,
 }

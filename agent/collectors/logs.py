@@ -52,7 +52,12 @@ def _powershell_events(logname, cap, source_name):
             capture_output=True, text=True, timeout=60,
         )
         if proc.returncode != 0:
-            return [{"_error": f"ps:{proc.stderr.strip()[:120]}"}]
+            err = proc.stderr.strip()[:120]
+            low = err.lower()
+            if "unauthorized" in low or "denied" in low or "access" in low:
+                # normalize permission failures to the tolerated marker
+                return [{"_error": f"access_denied:{logname}"}]
+            return [{"_error": f"ps:{err}"}]
         raw = proc.stdout.strip() or "[]"
         data = json.loads(raw) if raw.startswith("[") else [json.loads(raw)] if raw.startswith("{") else []
     except Exception as exc:
@@ -87,16 +92,18 @@ def _parse_evtx(path, source_name, cap):
     try:
         import Evtx.Evtx as evtx_mod
         with evtx_mod.Evtx(path) as log:
-            records = []
+            # Only the newest ~cap*3 record HANDLES are buffered here; XML
+            # conversion (the expensive pure-python step) runs exclusively
+            # on that window, not on the whole file.
+            from collections import deque
+            window = deque(maxlen=max(cap * 3, cap))
             for record in log.records():
+                window.append(record)
+            for record in window:
                 try:
                     xml = record.xml()
                 except Exception:
                     continue
-                records.append(xml)
-                if len(records) > cap * 3:
-                    records = records[-cap:]
-            for xml in records[-cap:]:
                 parsed = _evtx_xml_to_dict(xml, source_name, os.path.basename(path))
                 if parsed:
                     out.append(parsed)
