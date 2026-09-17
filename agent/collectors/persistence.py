@@ -101,7 +101,7 @@ def _win_scheduled_tasks():
     try:
         proc = subprocess.run(
             ["schtasks", "/query", "/fo", "csv", "/nh"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
         )
     except Exception:
         return out

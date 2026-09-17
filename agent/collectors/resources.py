@@ -39,7 +39,7 @@ def _gpu(enabled):
             proc = subprocess.run(
                 [exe, "--query-gpu=utilization.gpu,memory.used",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 parts = [p.strip() for p in proc.stdout.strip().splitlines()[0].split(",")]

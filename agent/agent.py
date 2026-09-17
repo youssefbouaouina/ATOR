@@ -220,7 +220,7 @@ def has_docker_engine():
         try:
             probe = subprocess.run(
                 ["docker", "version", "--format", "{{.Server.Version}}"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
             )
             return probe.returncode == 0
         except Exception:
