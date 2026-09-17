@@ -1,0 +1,94 @@
+{
+  "generated_at_utc": "2026-09-16T04:29:56+00:00",
+  "feature_spec_sha256": "9225377386b539d6e1ea89c7ae7e37ec0c25a41fe405a810feefd4b10c47637c",
+  "tier": "t1",
+  "positives": 185,
+  "capture_groups": 79,
+  "raw_tactic_counts": {
+    "credential_access": 38,
+    "defense_evasion": 75,
+    "discovery": 7,
+    "execution": 3,
+    "lateral_movement": 44,
+    "other": 2,
+    "persistence": 8,
+    "privilege_escalation": 8
+  },
+  "learnable_classes": [
+    "credential_access",
+    "defense_evasion",
+    "lateral_movement"
+  ],
+  "collapsed_counts": {
+    "credential_access": 38,
+    "defense_evasion": 75,
+    "other": 28,
+    "lateral_movement": 44
+  },
+  "min_examples_per_class": 10,
+  "accuracy": 0.5081,
+  "majority_class_baseline": 0.4054,
+  "macro_f1": 0.4776,
+  "weighted_f1": 0.5194,
+  "per_class": {
+    "credential_access": {
+      "precision": 0.3261,
+      "recall": 0.3947,
+      "f1-score": 0.3571,
+      "support": 38.0
+    },
+    "defense_evasion": {
+      "precision": 0.7031,
+      "recall": 0.6,
+      "f1-score": 0.6475,
+      "support": 75.0
+    },
+    "lateral_movement": {
+      "precision": 0.5789,
+      "recall": 0.5,
+      "f1-score": 0.5366,
+      "support": 44.0
+    },
+    "other": {
+      "precision": 0.3243,
+      "recall": 0.4286,
+      "f1-score": 0.3692,
+      "support": 28.0
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "credential_access",
+      "defense_evasion",
+      "lateral_movement",
+      "other"
+    ],
+    "matrix": [
+      [
+        15,
+        11,
+        4,
+        8
+      ],
+      [
+        14,
+        45,
+        8,
+        8
+      ],
+      [
+        7,
+        6,
+        22,
+        9
+      ],
+      [
+        10,
+        2,
+        4,
+        12
+      ]
+    ]
+  },
+  "note": "evaluated by grouped CV only - the held-out split contains just 3 of 8 tactics, so per-class numbers from it would be meaningless"
+}
