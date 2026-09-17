@@ -167,7 +167,59 @@ _TOOL_SIGNATURES: dict[str, tuple[tuple[str, re.Pattern], ...]] = {
     "dllinjection": (("cmdline", _rx(r"LoadLibrary|CreateRemoteThread|Invoke-DllInjection")),),
     "mavinject": (("cmdline", _rx(r"mavinject.*\/injectrunning")),),
     "xsl": (("cmdline", _rx(r"wmic.*\/format:.*\.xsl|wmic.*os\s+get\s+\/format")),),
-    "hh_local": (("cmdline", _rx(r"\bhh(\.exe)?\s+.*\.(htm|html|chm)")),),
+    # hh.exe executing a compiled-help payload. The original pattern required whitespace
+    # directly after hh.exe and so missed `"C:\windows\hh.exe" C:\ProgramData\x.chm`, where a
+    # closing quote intervenes.
+    "hh_local": (("cmdline", _rx(r"\bhh(\.exe)?[\"']?\s+.*\.(chm|htm|html)")),),
+
+    # ---- Phase 7a additions.
+    #
+    # Each matches the specific mechanism the emulation performed, visible in the process
+    # rows. They were found by reading the 26 captures that produced no seed at all - whose
+    # attacks were therefore being labelled benign and counted as false positives.
+    #
+    # Same rule as before: never seed on something a feature already computes. These key on
+    # utility invocations and harness artefacts, not on entropy/path/LOLBIN-ness.
+
+    # T1218.014 - Register-CimProvider loading an arbitrary DLL. The original pattern expected
+    # a -remove flag; the actual technique uses -Path.
+    "cimprovider": (("cmdline", _rx(r"register-cimprovider.*-path\s+\S+\.dll")),),
+    # T1543.003 - service binary path hijack: sc config <svc> binPath= <attacker payload>
+    "service_mod": (("cmdline", _rx(r"\bsc(\.exe)?\s+config\s+\S+\s+binpath\s*=")),),
+    "fax": (("cmdline", _rx(r"\bsc(\.exe)?\s+config\s+\S+\s+binpath\s*=")),),
+    # T1105 - ad-hoc Python web server used for staging/exfil, plus the firewall hole opened
+    # for it.
+    "webserver": (
+        ("cmdline", _rx(r"-m\s+http\.server")),
+        ("cmdline", _rx(r"netsh.*advfirewall\s+firewall\s+add\s+rule")),
+    ),
+    # Harness artefact names, like payload.exe: matching the emulation's own filename is
+    # closer to ground truth than to a behavioural feature.
+    "proxylogon": (
+        ("cmdline", _rx(r"public-poc\.py")),
+        ("cmdline", _rx(r"MonitorKnowledgeDiscovery\.vbs")),
+    ),
+    # T1546.003 - WMI event subscription. scrcons.exe is the WMI ActiveScript consumer host;
+    # it only runs when a script consumer fires.
+    "activescripteventconsumer": (
+        ("image", _rx(r"\\scrcons\.exe$")),
+        ("image", _rx(r"\\movewmi\.exe$")),
+    ),
+    # T1021.006 - PowerShell remoting. wsmprovhost.exe is the server-side WinRM host: its
+    # presence means someone connected and executed. Scoped to psremoting captures only,
+    # because WinRM is legitimate in many estates and a global seed would poison the benign
+    # class.
+    "psremoting": (
+        ("image", _rx(r"\\wsmprovhost\.exe$")),
+        ("cmdline", _rx(r"New-Object\s+IO\.(MemoryStream|Compression)")),
+    ),
+    # In-memory stager that decompresses a payload from a byte array - the Covenant/Empire
+    # launcher shape that uses -Command rather than -EncodedCommand.
+    "grunt": (("cmdline", _rx(r"New-Object\s+IO\.(MemoryStream|Compression)")),),
+    # T1518 - software discovery by registry query.
+    "discover_iexplorer": (
+        ("cmdline", _rx(r"\breg(\.exe)?\s+query\s+.*(Internet Explorer|CurrentVersion\\\\Uninstall)")),
+    ),
 
 }
 

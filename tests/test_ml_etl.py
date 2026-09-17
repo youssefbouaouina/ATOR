@@ -514,3 +514,77 @@ class TestHashParsing:
         assert otrf_etl._parse_hashes(None) == {}
         assert otrf_etl._parse_hashes("garbage") == {}
         assert otrf_etl._parse_hashes("sha256=lower")["SHA256"] == "lower"
+
+
+class TestPhase7aSeedSignatures:
+    """Phase 7a added nine mechanism-specific signatures for captures that previously
+    produced no seed at all - so their attacks were labelled benign and counted as false
+    positives against the model.
+
+    Each is pinned here because a regex that silently stops matching would quietly shrink
+    the positive class, and nothing else would notice.
+    """
+
+    @pytest.mark.parametrize("capture,image,cmdline", [
+        # hh.exe running a compiled-help payload. The original pattern required whitespace
+        # straight after hh.exe and missed the intervening closing quote.
+        ("defense_evasion__host__psh_hh_local_html_payload",
+         r"C:\windows\hh.exe", r'"C:\windows\hh.exe" C:\ProgramData\T1218.001.chm'),
+        # Register-CimProvider loading an arbitrary DLL (-Path, not -remove).
+        ("defense_evasion__host__psh_register_cimprovider_execute_dll",
+         r"C:\Windows\SysWow64\Register-CimProvider.exe",
+         r'"C:\Windows\SysWow64\Register-CimProvider.exe" -Path C:\ProgramData\T1218-2.dll'),
+        # T1543.003 service binary hijack.
+        ("privilege_escalation__host__cmd_service_mod_fax", r"C:\Windows\System32\sc.exe",
+         r'sc  config Fax binPath= "C:\windows\system32\WindowsPowerShell\v1.0\powershell.exe -noexit"'),
+        # Ad-hoc Python web server used for staging.
+        ("execution__host__psh_python_webserver", r"C:\Python39\python.exe",
+         r'"C:\Python39\python.exe" -m http.server 8000'),
+        # Harness artefact names.
+        ("persistence__host__proxylogon_ssrf_rce_poc", r"C:\Python\python.exe",
+         "python  public-poc.py localhost wardog@azsentinel.local"),
+        # WMI ActiveScript consumer host.
+        # Full capture id matters: signatures are keyed on tokens found in it, and this
+        # one is selected by 'activescripteventconsumer'.
+        ("lateral_movement__host__covenant_wmi_remote_event_subscription_"
+         "ActiveScriptEventConsumers",
+         r"C:\windows\system32\wbem\scrcons.exe", r"scrcons.exe -Embedding"),
+        # In-memory stager that uses -Command rather than -EncodedCommand.
+        ("lateral_movement__host__covenant_psremoting_grunt",
+         r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+         '"powershell.exe" -Sta -Nop -Window Hidden -Command "sv o (New-Object IO.MemoryStream)"'),
+        # Server-side WinRM host, scoped to psremoting captures only.
+        ("lateral_movement__host__covenant_psremoting_command",
+         r"C:\windows\system32\wsmprovhost.exe", "wsmprovhost.exe -Embedding"),
+        # Registry-based software discovery.
+        ("discovery__host__cmd_discover_iexplorer_version_registry",
+         r"C:\windows\system32\reg.exe",
+         r'reg  query "HKEY_LOCAL_MACHINE\Software\Microsoft\Internet Explorer" /v svcVersion'),
+    ])
+    def test_signature_fires(self, capture, image, cmdline):
+        sigs = labels_mod.signatures_for(capture)
+        assert labels_mod._is_seed(image, cmdline, sigs) is not None, \
+            f"no seed matched for {capture}"
+
+    def test_wsmprovhost_is_scoped_to_psremoting_captures(self):
+        """WinRM is legitimate in many estates; a global seed would poison the benign class."""
+        in_scope = labels_mod.signatures_for("lateral_movement__host__covenant_psremoting_x")
+        assert labels_mod._is_seed(
+            r"C:\windows\system32\wsmprovhost.exe", "wsmprovhost.exe -Embedding",
+            in_scope) is not None
+        out_of_scope = labels_mod.signatures_for("discovery__host__some_other_capture")
+        assert labels_mod._is_seed(
+            r"C:\windows\system32\wsmprovhost.exe", "wsmprovhost.exe -Embedding",
+            out_of_scope) is None
+
+    def test_new_signatures_do_not_match_ordinary_activity(self):
+        """Guard against over-broad seeds, which would inflate results by poisoning benign."""
+        sigs = labels_mod.signatures_for(
+            "privilege_escalation__host__cmd_service_mod_fax")
+        for image, cmdline in [
+            (r"C:\Windows\System32\sc.exe", "sc  query Fax"),
+            (r"C:\Windows\System32\sc.exe", "sc  start Fax"),
+            (r"C:\Windows\System32\svchost.exe", "svchost.exe -k netsvcs"),
+            (r"C:\Windows\System32\reg.exe", r"reg  add HKCU\Software\Test /v x"),
+        ]:
+            assert labels_mod._is_seed(image, cmdline, sigs) is None, cmdline
