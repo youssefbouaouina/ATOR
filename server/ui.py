@@ -57,17 +57,84 @@ def register_ui(target_app):
             """SELECT d.*, e.technique_name FROM detections d
                LEFT JOIN enriched_detections e ON e.detection_id=d.id
                WHERE d.host_id=? ORDER BY d.detected_at_utc DESC LIMIT 50""", (selected,))]
+        # Confidence band drives the badge colour. Imported lazily and defensively: the ML
+        # stack is optional, and the investigation page must render without it.
+        try:
+            from server.engine.ml_triage import confidence_band
+            for d in detections:
+                d["confidence_band"] = confidence_band(d.get("confidence_score"))
+        except Exception:                            # noqa: BLE001
+            for d in detections:
+                d["confidence_band"] = "unknown"
         conn.close()
         return tpl.TemplateResponse(request, "investigation.html", {
             "hosts": hosts, "selected": selected, "timeline": tl, "soc": soc,
             "tree": tree, "detections": detections, "page": "investigation",
         })
 
+    @target_app.get("/ml", response_class=HTMLResponse)
+    def ml_analytics(request: Request, conn=Depends(database.connect)):
+        """Layer 4.5 ML dashboard: models, triage queue, host risk, drift.
+
+        Degrades rather than fails when the optional ML stack is absent - the template
+        renders an explanatory banner and the rest of the dashboard is unaffected.
+        """
+        from server.engine import ml_registry, ml_triage
+
+        try:
+            ml = ml_registry.describe(conn)
+        except Exception as exc:                     # noqa: BLE001
+            ml = {"available": False, "reason": f"{type(exc).__name__}: {exc}", "models": []}
+
+        anomalies = []
+        for row in conn.execute(
+            """SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
+                      d.detected_at_utc, d.anomaly_score, d.confidence_score, d.ml_explanation
+               FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
+               WHERE d.rule_type = 'ml_anomaly'
+               ORDER BY d.anomaly_score DESC, d.id DESC LIMIT 40"""):
+            item = dict(row)
+            try:
+                item["ml_explanation"] = json.loads(item["ml_explanation"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                item["ml_explanation"] = {}
+            item["confidence_band"] = ml_triage.confidence_band(item.get("confidence_score"))
+            anomalies.append(item)
+
+        risk = []
+        for row in conn.execute(
+            """SELECT r.host_id, h.hostname, r.score, r.tier, r.breakdown_json
+               FROM host_risk_scores r LEFT JOIN hosts h ON h.id = r.host_id
+               ORDER BY r.score DESC LIMIT 20"""):
+            item = dict(row)
+            try:
+                item["breakdown"] = json.loads(item.pop("breakdown_json") or "{}")
+            except json.JSONDecodeError:
+                item["breakdown"] = {}
+            risk.append(item)
+
+        entries = [dict(r) for r in conn.execute(
+            """SELECT computed_at_utc, feature_name, psi, verdict FROM ml_drift_log
+               ORDER BY computed_at_utc DESC, psi DESC LIMIT 20""")]
+        drift = {
+            "entries": entries,
+            "shifted_features": sum(1 for e in entries if e["verdict"] == "shifted"),
+            "retrain_recommended": any(e["verdict"] == "shifted" for e in entries),
+        }
+        conn.close()
+        return tpl.TemplateResponse(request, "ml_analytics.html", {
+            "ml": ml, "anomalies": anomalies, "risk": risk, "drift": drift, "page": "ml",
+        })
+
     @target_app.get("/endpoints", response_class=HTMLResponse)
     def endpoints(request: Request, conn=Depends(database.connect)):
         hosts = [dict(r) for r in conn.execute(
-            """SELECT h.*, (SELECT COUNT(*) FROM detections d WHERE d.host_id=h.id) AS detection_count
-               FROM hosts h ORDER BY h.id"""
+            """SELECT h.*,
+                      (SELECT COUNT(*) FROM detections d WHERE d.host_id=h.id) AS detection_count,
+                      r.score AS risk_score, r.tier AS risk_tier
+               FROM hosts h
+               LEFT JOIN host_risk_scores r ON r.host_id = h.id
+               ORDER BY COALESCE(r.score, -1) DESC, h.id"""
         )]
         conn.close()
         return tpl.TemplateResponse(request, "endpoints.html", {

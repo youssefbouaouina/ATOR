@@ -236,6 +236,134 @@ CREATE INDEX IF NOT EXISTS ix_res_alerts_host_time ON resource_alerts(host_id, t
 """
 
 
+# ---------------------------------------------------------------------------
+# Layer 4.5 ML schema.
+#
+# Kept separate from SCHEMA so the ML layer is an additive, reversible overlay on
+# the DFIR track's schema rather than an edit to it. Applied by migrate(), which
+# init_db() calls - so every entry point (API startup, tests, demo seeding) gets
+# it automatically.
+#
+# Design notes (full rationale in docs/ML_ARCHITECTURE.md section 6):
+#   * detections.rule_type is REUSED for 'ml_anomaly'/'ml_triage'. We deliberately
+#     do NOT add a 'source' column: rule_type already carries sigma/yara/ioc, and a
+#     second column of record would be a data-integrity trap.
+#   * ml_resource_rollup exists because prune_old_resource_samples() hard-deletes
+#     resource_samples older than 72h. Any baseline longer than that must be
+#     summarised before pruning or it is lost.
+#   * feature_spec_sha256 pins the exact feature contract a model was trained
+#     against, so a stale model can never be fed a changed feature vector.
+# ---------------------------------------------------------------------------
+ML_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ml_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
+    model_type TEXT NOT NULL CHECK (model_type IN ('anomaly','triage','tactic')),
+    feature_tier TEXT NOT NULL CHECK (feature_tier IN ('t1','t2')),
+    feature_spec_sha256 TEXT NOT NULL,
+    trained_at_utc TEXT NOT NULL,
+    training_rows INTEGER,
+    training_source TEXT,
+    metrics_json TEXT,
+    model_path TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (name, version)
+);
+CREATE INDEX IF NOT EXISTS ix_ml_models_active
+    ON ml_models(model_type, feature_tier, is_active);
+
+CREATE TABLE IF NOT EXISTS host_risk_scores (
+    host_id INTEGER PRIMARY KEY REFERENCES hosts(id),
+    score REAL NOT NULL,
+    tier TEXT NOT NULL CHECK (tier IN ('low','medium','high','critical')),
+    last_computed_utc TEXT NOT NULL,
+    breakdown_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ml_resource_rollup (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER NOT NULL REFERENCES hosts(id),
+    window_start_utc TEXT NOT NULL,
+    window_end_utc TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    stats_json TEXT NOT NULL,
+    UNIQUE (host_id, window_start_utc)
+);
+CREATE INDEX IF NOT EXISTS ix_ml_rollup_host
+    ON ml_resource_rollup(host_id, window_start_utc);
+
+CREATE TABLE IF NOT EXISTS ml_drift_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    computed_at_utc TEXT NOT NULL,
+    model_id INTEGER REFERENCES ml_models(id),
+    feature_name TEXT NOT NULL,
+    psi REAL NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('stable','moderate','shifted'))
+);
+CREATE INDEX IF NOT EXISTS ix_ml_drift_time ON ml_drift_log(computed_at_utc);
+
+CREATE INDEX IF NOT EXISTS ix_det_rule_type ON detections(rule_type);
+"""
+
+# Indexes over the columns added by ML_DETECTION_COLUMNS. These MUST be created
+# after the ALTER TABLE statements, so they cannot live in ML_SCHEMA - indexing a
+# column that does not exist yet fails the whole script on a fresh database.
+ML_DETECTION_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS ix_det_confidence ON detections(confidence_score)",
+    "CREATE INDEX IF NOT EXISTS ix_det_anomaly ON detections(anomaly_score)",
+)
+
+# Columns added to the existing detections table. SQLite has no
+# "ADD COLUMN IF NOT EXISTS", so each is applied only when absent.
+ML_DETECTION_COLUMNS = (
+    ("confidence_score", "REAL"),      # Component B, calibrated 0..1
+    ("anomaly_score", "REAL"),         # Component A, 0..1
+    ("suggested_tactics", "TEXT"),     # Component C, JSON array
+    ("ml_model_id", "INTEGER"),        # provenance -> ml_models.id
+    ("ml_explanation", "TEXT"),        # JSON: top contributing features
+)
+
+# Values rule_type may take once the ML layer is active.
+ML_RULE_TYPES = ("ml_anomaly", "ml_triage")
+
+
+def _table_columns(conn, table):
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def migrate(conn):
+    """Apply the Layer 4.5 ML schema overlay. Idempotent and additive.
+
+    Safe to run on a populated production database: it only creates tables that
+    do not exist and adds nullable columns. No existing row is rewritten and no
+    column is ever dropped or retyped.
+
+    Returns a dict describing what actually changed, so callers/tests can assert
+    on it rather than guessing.
+    """
+    changed = {"tables_created": [], "columns_added": []}
+
+    before = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.executescript(ML_SCHEMA)
+    after = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    changed["tables_created"] = sorted(after - before)
+
+    existing = _table_columns(conn, "detections")
+    for column, coltype in ML_DETECTION_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE detections ADD COLUMN {column} {coltype}")
+            changed["columns_added"].append(column)
+
+    # Only now that the columns exist can they be indexed.
+    for statement in ML_DETECTION_INDEXES:
+        conn.execute(statement)
+    conn.commit()
+    return changed
+
+
 def connect(db_path=None):
     conn = sqlite3.connect(db_path or DB_PATH, timeout=15, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -249,6 +377,12 @@ def init_db(db_path=None):
     try:
         conn.executescript(SCHEMA)
         conn.commit()
+        # Layer 4.5 ML overlay. Additive and idempotent; failing to apply it must
+        # not prevent the DFIR pipeline from starting, so it is best-effort.
+        try:
+            migrate(conn)
+        except sqlite3.Error as exc:            # pragma: no cover - defensive
+            print(f"[db] ML migration skipped: {exc}")
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         return mode
     finally:

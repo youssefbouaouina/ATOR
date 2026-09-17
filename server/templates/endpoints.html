@@ -44,7 +44,7 @@ python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span cla
 <div class="card ator-card">
   <div class="card-body p-0">
     <table class="table table-hover data ator-table mb-0" data-interactive data-interactive-empty="1" id="epTable">
-      <thead><tr><th data-sort>ID</th><th data-sort>Client ID</th><th data-sort>Hostname</th><th data-sort>OS</th><th data-sort>Docker</th><th data-sort>Last seen (UTC)</th><th data-sort>Detections</th><th data-sort>Status</th><th></th></tr></thead>
+      <thead><tr><th data-sort>ID</th><th data-sort>Client ID</th><th data-sort>Hostname</th><th data-sort>OS</th><th data-sort>Docker</th><th data-sort>Last seen (UTC)</th><th data-sort>Detections</th><th data-sort title="Severity x recency + tactic diversity + capped ML contribution">Risk</th><th data-sort>Status</th><th></th></tr></thead>
       <tbody>
       {% for h in hosts %}
         <tr data-host-id="{{ h.id }}" data-hostname="{{ h.hostname|lower }}" data-client="{{ h.client_id|lower }}"
@@ -54,6 +54,13 @@ python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span cla
           <td>{{ 'yes' if h.docker_engine_flag else '-' }}</td>
           <td class="mono">{{ h.last_seen_utc or 'never' }}</td>
           <td>{{ h.detection_count }}</td>
+          <td>
+            {% if h.risk_tier %}
+              <span class="badge badge-{{ h.risk_tier }}" title="risk score {{ '%.1f'|format(h.risk_score) }}">
+                {{ h.risk_tier }}</span>
+              <span class="mono small text-muted">{{ '%.1f'|format(h.risk_score) }}</span>
+            {% else %}<span class="text-muted small">&mdash;</span>{% endif %}
+          </td>
           <td>{% if h.is_active %}<span class="status-pill online"><span class="dot"></span>active</span>{% else %}<span class="status-pill revoked"><span class="dot"></span>revoked</span>{% endif %}</td>
           <td>
             {% if h.is_active %}

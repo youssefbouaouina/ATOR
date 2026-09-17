@@ -1,0 +1,8 @@
+# ATOR DFIR - ML layer (Layer 4.5 ML) additional dependencies.
+# Installed on top of requirements.txt. Pinned lower bounds; CPU-only, no GPU,
+# no PyTorch/TensorFlow (see docs/ML_ARCHITECTURE.md section "Operational constraints").
+scikit-learn>=1.5,<2.0
+pandas>=2.2
+numpy>=1.26
+joblib>=1.4
+matplotlib>=3.8      # evaluation figures only (never imported by the server)

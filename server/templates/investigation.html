@@ -44,12 +44,28 @@
       <div class="card-header">Detections for this host</div>
       <div class="card-body p-0">
         <table class="table table-sm mb-0 data">
-          <thead><tr><th>Time</th><th>Rule</th><th>MITRE</th><th>Name</th><th>Sev</th></tr></thead>
+          <thead><tr><th>Time</th><th>Src</th><th>Rule</th><th>MITRE</th><th>Name</th>
+                      <th>Sev</th><th title="Calibrated P(malicious) from the ML triage model">Conf</th></tr></thead>
           <tbody>
           {% for d in detections %}
-            <tr><td class="mono">{{ d.detected_at_utc }}</td><td>{{ d.rule_name[:40] }}</td>
+            <tr><td class="mono">{{ d.detected_at_utc }}</td>
+                <td>
+                  {% if d.rule_type == 'ml_anomaly' %}
+                    <span class="badge bg-info text-dark" title="statistical finding, not a rule match">ML</span>
+                  {% else %}
+                    <span class="badge bg-secondary">{{ d.rule_type }}</span>
+                  {% endif %}
+                </td>
+                <td>{{ d.rule_name[:40] }}</td>
                 <td class="mono">{{ d.technique_id or '-' }}</td><td>{{ d.technique_name or '-' }}</td>
-                <td><span class="badge badge-{{ d.severity }}">{{ d.severity }}</span></td></tr>
+                <td><span class="badge badge-{{ d.severity }}">{{ d.severity }}</span></td>
+                <td>
+                  {% if d.confidence_score is not none %}
+                    <span class="badge badge-{{ d.confidence_band }} mono"
+                          title="ML triage confidence - calibrated probability this process is malicious">
+                      {{ '%.2f'|format(d.confidence_score) }}</span>
+                  {% else %}<span class="text-muted small">&mdash;</span>{% endif %}
+                </td></tr>
           {% endfor %}
           </tbody>
         </table>

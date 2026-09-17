@@ -11,6 +11,22 @@ def _parse(ts):
         return None
 
 
+def _parse_summary(raw):
+    """Decode detections.summary defensively.
+
+    The column is documented as JSON, but a plain string is a plausible mistake for any
+    future detector to make, and a malformed summary must never be able to take down the
+    whole timeline for a host. Returns the decoded object, or the raw text wrapped so the
+    information still reaches the analyst.
+    """
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {"text": str(raw)[:600]}
+
+
 def build(conn, host_id=None, limit=500):
     conditions = []
     params = []
@@ -30,7 +46,9 @@ def build(conn, host_id=None, limit=500):
             "kind": "detection",
             "severity": row["severity"],
             "title": f"[{row['rule_type'].upper()}] {row['rule_name']}",
-            "detail": json.dumps({"technique_id": row["technique_id"], "summary": json.loads(row["summary"] or "{}")}, default=str)[:800],
+            "detail": json.dumps({"technique_id": row["technique_id"],
+                                  "summary": _parse_summary(row["summary"])},
+                                 default=str)[:800],
             "ref": f"detection:{row['id']}",
         })
 
