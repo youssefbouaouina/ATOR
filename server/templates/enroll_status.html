@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% block title %}Enrollment Status{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <div class="card ator-card anim-rise">
+      <div class="card-header">
+        <h4 class="mb-0">Enrollment Request Status</h4>
+      </div>
+      <div class="card-body">
+        <div id="statusCard" class="text-center py-4">
+          <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <h5 class="text-muted">Checking request status...</h5>
+        </div>
+
+        <div id="resultContent" class="d-none">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="mb-0" id="statusTitle">Request Status</h5>
+            <span class="badge bg-secondary" id="statusBadge">pending</span>
+          </div>
+
+          <div class="row g-3 mb-4" id="tokenRow" style="display:none;">
+            <div class="col-md-6">
+              <label class="form-label small mb-1">Request Token</label>
+              <div class="input-group">
+                <input type="text" class="form-control form-control-sm mono" id="requestToken" readonly>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="copyToken('requestToken')">
+                  Copy
+                </button>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small mb-1">Enrollment Token</label>
+              <div class="input-group">
+                <input type="text" class="form-control form-control-sm mono" id="enrollmentToken" readonly>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="copyToken('enrollmentToken')">
+                  Copy
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="alert" id="statusAlert" role="alert" style="display:none;"></div>
+
+          <div id="pendingInfo" style="display:none;">
+            <div class="alert alert-info">
+              <h6><i class="bi bi-info-circle me-1"></i> Request Pending</h6>
+              <p class="mb-0">Your enrollment request has been submitted and is awaiting admin approval. 
+              This page will automatically refresh every 10 seconds.</p>
+            </div>
+          </div>
+
+          <div id="acceptedInfo" style="display:none;">
+            <div class="alert alert-success">
+              <h6><i class="bi bi-check-circle me-1"></i> Request Approved!</h6>
+              <p class="mb-2">Your enrollment request has been approved. Run the command below on the endpoint
+              (<span id="enrollPlatform">Windows</span>) to install the agent and complete enrollment.</p>
+              <div id="enrollCommand" class="mt-3 p-3 bg-light rounded mono small text-break"></div>
+              <div class="d-grid gap-2 mt-2">
+                <button class="btn btn-primary" type="button" id="copyBootstrapBtn">Copy Enrollment Command</button>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="showEnrollCommand()">Show all options</button>
+              </div>
+              <div id="enrollOptions" class="mt-3" style="display:none;"></div>
+            </div>
+          </div>
+
+          <div id="enrolledInfo" style="display:none;">
+            <div class="alert alert-success">
+              <h6><i class="bi bi-check-circle-fill me-1"></i> Enrolled Successfully!</h6>
+              <p class="mb-0">This endpoint has been enrolled. You can now view it in the <a href="/endpoints">Endpoints</a> page.</p>
+            </div>
+          </div>
+
+          <div id="rejectedInfo" style="display:none;">
+            <div class="alert alert-danger">
+              <h6><i class="bi bi-x-circle me-1"></i> Request Rejected</h6>
+              <p class="mb-1">Reason: <span id="rejectionReason"></span></p>
+              <p class="mb-0">You may <a href="/enroll">submit a new request</a> if needed.</p>
+            </div>
+          </div>
+
+          <div id="expiredInfo" style="display:none;">
+            <div class="alert alert-warning">
+              <h6><i class="bi bi-clock me-1"></i> Request Expired</h6>
+              <p class="mb-0">This enrollment request has expired. <a href="/enroll">Submit a new request</a>.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+
+  // Server LAN IP discovered server-side. This is what REMOTE endpoints must
+  // use - NOT 127.0.0.1 (which points at the endpoint itself).
+  const serverUrl = new URL({{ request.base_url|string|tojson }});
+  if (["localhost", "127.0.0.1", "[::1]"].includes(serverUrl.hostname)) {
+    serverUrl.hostname = {{ lan_ip|default('127.0.0.1')|tojson }};
+  }
+  const SERVER_BASE = serverUrl.href.replace(/\/$/, "");
+
+  // Linux and Docker hosts use the shell bootstrap; Windows uses PowerShell.
+  function isWindows(osType) {
+    return !osType || osType === "windows";
+  }
+
+  function bootstrapCommand(token, osType) {
+    if (!isWindows(osType)) return linuxBootstrapCommand(token);
+    // One self-contained command: pull the bootstrap script from the ATOR
+    // server and run it against that same server using its LAN IP.
+    // Uses single quotes for all inner args and no $variables, so the command
+    // behaves the same pasted into cmd.exe or into a PowerShell prompt. The
+    // script is saved to the user's temp dir: a non-elevated shell cannot
+    // write to the root of C:.
+    var target = "([IO.Path]::GetTempPath() + 'ator_bootstrap.ps1')";
+    var sDownload = "Invoke-WebRequest -UseBasicParsing -Uri '" + SERVER_BASE + "/static/bootstrap_endpoint.ps1' -OutFile " + target;
+    var sRun = "& " + target + " -ServerUrl '" + SERVER_BASE + "' -EnrollmentToken '" + token + "' -EnablePersistence";
+    return "powershell -NoProfile -ExecutionPolicy Bypass -Command \"" + sDownload + "; " + sRun + "\"";
+  }
+
+  function linuxBootstrapCommand(token) {
+    var url = SERVER_BASE + "/static/bootstrap_endpoint.sh";
+    return "(curl -fsSL '" + url + "' || wget -qO- '" + url + "') > /tmp/ator_bootstrap.sh" +
+      " && sudo bash /tmp/ator_bootstrap.sh --server '" + SERVER_BASE + "' --token '" + token + "'";
+  }
+
+  function installedCommand(token, osType) {
+    // Only valid if the agent is ALREADY installed on the endpoint.
+    if (!isWindows(osType)) {
+      return "cd /opt/ator-agent && sudo ./.venv/bin/python -m agent.agent enroll --token " + token +
+        " --server " + SERVER_BASE;
+    }
+    return "cd C:\\ator-agent; .\\.venv\\Scripts\\python.exe -m agent.agent enroll --token " + token +
+      " --server " + SERVER_BASE;
+  }
+
+  let currentOsType = "windows";
+
+  const requestToken = {{ request.path_params.get('request_token', '')|tojson }};
+
+  const statusCard = document.getElementById("statusCard");
+  const resultContent = document.getElementById("resultContent");
+  const statusBadge = document.getElementById("statusBadge");
+  const statusTitle = document.getElementById("statusTitle");
+  const statusAlert = document.getElementById("statusAlert");
+  const tokenRow = document.getElementById("tokenRow");
+  const requestTokenEl = document.getElementById("requestToken");
+  const enrollmentTokenEl = document.getElementById("enrollmentToken");
+  const pendingInfo = document.getElementById("pendingInfo");
+  const acceptedInfo = document.getElementById("acceptedInfo");
+  const enrolledInfo = document.getElementById("enrolledInfo");
+  const rejectedInfo = document.getElementById("rejectedInfo");
+  const rejectedReason = document.getElementById("rejectionReason");
+  const expiredInfo = document.getElementById("expiredInfo");
+  const enrollCommandDiv = document.getElementById("enrollCommand");
+
+  let pollInterval = null;
+
+  function showAlert(message, type) {
+    const alert = document.getElementById("statusAlert");
+    alert.textContent = message;
+    alert.className = "alert alert-" + type;
+    alert.style.display = "block";
+  }
+
+  function hideAllSections() {
+    [pendingInfo, acceptedInfo, enrolledInfo, document.getElementById("rejectedInfo"), document.getElementById("expiredInfo")].forEach(el => {
+      if (el) el.style.display = "none";
+    });
+  }
+
+  async function checkStatus() {
+    try {
+      const response = await fetch("/api/v1/enroll/status/" + encodeURIComponent(requestToken));
+      if (!response.ok) {
+        if (response.status === 404) {
+          showAlert("Enrollment request not found. The token may be invalid.", "danger");
+          return;
+        }
+        throw new Error("Failed to check status");
+      }
+      const data = await response.json();
+      updateUI(data);
+    } catch (err) {
+      console.error("Status check failed:", err);
+    }
+  }
+
+  function updateUI(data) {
+    statusCard.style.display = "none";
+    document.getElementById("resultContent").classList.remove("d-none");
+    hideAllSections();
+
+    const status = data.status;
+    statusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    statusBadge.className = "badge " + getBadgeClass(status);
+
+    // Show/hide token row
+    const tokenRowEl = document.getElementById("tokenRow");
+    if (data.request_token) {
+      document.getElementById("requestToken").value = data.request_token;
+      tokenRowEl.style.display = "block";
+    }
+    if (data.enrollment_token) {
+      document.getElementById("enrollmentToken").value = data.enrollment_token;
+      tokenRowEl.style.display = "block";
+    }
+
+    switch (status) {
+      case "pending":
+        document.getElementById("pendingInfo").style.display = "block";
+        statusTitle.textContent = "Request Pending";
+        break;
+      case "accepted":
+        document.getElementById("acceptedInfo").style.display = "block";
+        statusTitle.textContent = "Request Approved";
+        currentOsType = data.os_type || "windows";
+        document.getElementById("enrollPlatform").textContent =
+          isWindows(currentOsType) ? "Windows" : (currentOsType === "docker_host" ? "Linux Docker host" : "Linux");
+        if (data.enrollment_token) {
+          document.getElementById("enrollCommand").textContent = bootstrapCommand(data.enrollment_token, currentOsType);
+        }
+        break;
+      case "enrolled":
+        document.getElementById("enrolledInfo").style.display = "block";
+        statusTitle.textContent = "Enrolled";
+        stopPolling();
+        break;
+      case "rejected":
+        document.getElementById("rejectedInfo").style.display = "block";
+        document.getElementById("rejectionReason").textContent = data.rejection_reason || "No reason provided";
+        statusTitle.textContent = "Request Rejected";
+        stopPolling();
+        break;
+      case "expired":
+        document.getElementById("expiredInfo").style.display = "block";
+        statusTitle.textContent = "Request Expired";
+        stopPolling();
+        break;
+      default:
+        statusTitle.textContent = "Unknown Status: " + status;
+    }
+  }
+
+  function getBadgeClass(status) {
+    switch (status) {
+      case "pending": return "bg-warning text-dark";
+      case "accepted": return "bg-info text-dark";
+      case "enrolled": return "bg-success";
+      case "rejected": return "bg-danger";
+      case "expired": return "bg-warning text-dark";
+      default: return "bg-secondary";
+    }
+  }
+
+  window.copyToken = function (id) {
+    const input = document.getElementById(id);
+    input.select();
+    document.execCommand("copy");
+    const btn = input.nextElementSibling;
+    const original = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => btn.textContent = original, 1500);
+  };
+
+  function copyFrom(btn, text) {
+    const done = function () {
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(function () { btn.textContent = orig; }, 1500);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done);
+    } else {
+      // Plain-HTTP LAN deployments have no Clipboard API.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      done();
+    }
+  }
+
+  function commandBlock(title, command) {
+    const box = document.createElement("div");
+    box.className = "mt-2 p-3 bg-dark text-light rounded mono small text-break";
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    const code = document.createElement("code");
+    code.className = "d-block my-2 text-light";
+    code.textContent = command;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-sm btn-outline-light";
+    btn.textContent = "Copy";
+    btn.addEventListener("click", function () { copyFrom(btn, command); });
+    box.append(heading, code, btn);
+    return box;
+  }
+
+  window.showEnrollCommand = function () {
+    const token = document.getElementById("enrollmentToken").value;
+    const options = document.getElementById("enrollOptions");
+    options.replaceChildren(
+      commandBlock(isWindows(currentOsType)
+        ? "Fresh Windows endpoint (recommended - bootstraps everything, run in PowerShell or cmd):"
+        : "Fresh Linux endpoint (recommended - bootstraps everything, run in a shell with sudo rights):",
+        bootstrapCommand(token, currentOsType)),
+      commandBlock("Agent already installed:", installedCommand(token, currentOsType))
+    );
+    options.style.display = "block";
+  };
+
+  window.copyText = function (text, btn) {
+    copyFrom(btn || { textContent: "" }, text);
+  };
+
+  window.copyEnrollCommand = function () {
+    const token = document.getElementById("enrollmentToken").value;
+    window.copyText(bootstrapCommand(token, currentOsType), document.getElementById("copyBootstrapBtn"));
+  };
+
+  const copyBtn = document.getElementById("copyBootstrapBtn");
+  if (copyBtn && copyBtn.addEventListener) copyBtn.addEventListener("click", window.copyEnrollCommand);
+
+  function stopPolling() {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
+
+  // Initial load
+  checkStatus();
+
+  // Poll every 10 seconds
+  pollInterval = setInterval(checkStatus, 10000);
+
+  // Cleanup on unload
+  window.addEventListener("beforeunload", stopPolling);
+})();
+</script>
+{% endblock %}

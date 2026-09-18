@@ -1,6 +1,8 @@
 import html
 import json
 import os
+import re
+
 from datetime import datetime, timedelta, timezone
 
 from server.engine import soc_chain, timeline
@@ -21,13 +23,90 @@ TACTIC_HEX = {
     "exfiltration": "#c0392b", "impact": "#7b241c",
 }
 
-MITRE_BASE_URL = "https://attack.mitre.org/techniques/enterprise/"
+MITRE_BASE_URL = "https://attack.mitre.org/techniques/"
 LINK_COLOR = "#2456a6"
 
 
 def _ensure_dir():
     os.makedirs(REPORTS_DIR, exist_ok=True)
     return REPORTS_DIR
+
+
+# Human-readable root cause when a detection carries no explicit x-ator-cause.
+# Keyed first by rule_type, then refined by technique / rule-name keywords, so
+# every detection - not just the demo ones - gets a "why did this fire" line.
+_ROOT_CAUSE_BY_TYPE = {
+    "ioc": "Match against a known-bad threat-intel indicator (watchlist hash/IP/domain)",
+    "yara": "File content matched a malicious-signature (YARA) rule",
+}
+
+_ROOT_CAUSE_KEYWORDS = [
+    (("reverse shell", "4444", "beacon", "c2"), "Outbound connection to a reverse-shell / C2 destination"),
+    (("download cradle", "pipe", "curl", "wget", "certutil"), "Remote payload fetched and executed on the host"),
+    (("encoded command", "obfuscat"), "Obfuscated / encoded command execution"),
+    (("cron", "run key", "runonce", "scheduled task", "schtask", "persistence", "systemd"),
+     "Persistence mechanism registered to survive logoff/reboot"),
+    (("mimikatz", "credential", "lsass", "sam"), "Credential-theft tooling executed"),
+    (("whoami", "discovery", "enumeration"), "Host / account discovery activity"),
+    (("ransom", "encrypt"), "Destructive file-encryption (ransomware) activity"),
+    (("phishing", "attachment", "link"), "User executed attacker-delivered phishing content"),
+    (("spyware", "keylog"), "Spyware / keylogger capturing user input"),
+]
+
+
+def _detection_evidence(detection):
+    try:
+        return json.loads(detection["summary"] or "{}")
+    except (TypeError, KeyError, json.JSONDecodeError):
+        return {}
+
+
+def detection_root_cause(detection, evidence=None):
+    """Return (root_cause_text, investigation_hint) for one detection.
+
+    Prefers the rule-authored x-ator-cause; otherwise infers a plain-language
+    cause from the rule type, MITRE technique, and rule name so the report can
+    state a root cause for *every* alert.
+    """
+    ev = evidence if evidence is not None else _detection_evidence(detection)
+    category = ev.get("cause_category")
+    hint = ev.get("investigation_hint", "")
+    if category:
+        return category.replace("_", " ").strip().capitalize(), hint
+    rtype = (detection["rule_type"] if "rule_type" in detection.keys() else "") or ""
+    if rtype in _ROOT_CAUSE_BY_TYPE:
+        return _ROOT_CAUSE_BY_TYPE[rtype], hint
+    haystack = " ".join(str(detection[k]) for k in ("rule_name", "technique_id")
+                        if k in detection.keys() and detection[k]).lower()
+    for needles, cause in _ROOT_CAUSE_KEYWORDS:
+        if any(n in haystack for n in needles):
+            return cause, hint
+    return "Behavioral rule matched suspicious activity", hint
+
+
+def detection_locus(detection, host, evidence=None):
+    """Return a 'where' string: which host, and the exact process/file/network
+    locus the detection fired on."""
+    ev = evidence if evidence is not None else _detection_evidence(detection)
+    machine = "-"
+    if host:
+        hostname = host["hostname"] if "hostname" in host.keys() else None
+        os_type = host["os_type"] if "os_type" in host.keys() else None
+        machine = f"{hostname or '?'} ({os_type})" if os_type else (hostname or "-")
+    parts = []
+    if ev.get("exe_path") or ev.get("name") or ev.get("process_name"):
+        proc = ev.get("exe_path") or ev.get("name") or ev.get("process_name")
+        pid = ev.get("pid")
+        parts.append(f"process {proc}" + (f" (pid {pid})" if pid else ""))
+    if ev.get("path"):
+        parts.append(f"file {ev['path']}")
+    if ev.get("remote_ip"):
+        port = ev.get("remote_port")
+        parts.append(f"network {ev['remote_ip']}" + (f":{port}" if port else ""))
+    if not parts and ev.get("cmdline"):
+        parts.append(f"cmd: {str(ev['cmdline'])[:80]}")
+    locus = "; ".join(parts) if parts else "see evidence annex"
+    return machine, locus
 
 
 def host_report_data(conn, host_id):
@@ -51,13 +130,52 @@ def host_report_data(conn, host_id):
         (host_id,),
     ).fetchall()
     ioc_hits = [d for d in detections if d["rule_type"] == "ioc"]
+    source_hypotheses = []
+    detection_dicts = []
+    root_cause_rows = []
+    for detection in detections:
+        evidence = _detection_evidence(detection)
+        cause_text, hint = detection_root_cause(detection, evidence)
+        machine, locus = detection_locus(detection, host, evidence)
+        d = dict(detection)
+        # Root cause / where / when attached to every detection so the dashboard
+        # JSON and the PDF share one source of truth.
+        d["root_cause"] = cause_text
+        d["investigation_hint"] = hint
+        d["where_machine"] = machine
+        d["where_locus"] = locus
+        d["when_first_utc"] = detection["detected_at_utc"]
+        d["when_last_utc"] = (detection["last_seen_utc"] if "last_seen_utc" in detection.keys()
+                              else None) or detection["detected_at_utc"]
+        d["hit_count"] = detection["hit_count"] if "hit_count" in detection.keys() else 1
+        detection_dicts.append(d)
+        root_cause_rows.append({
+            "rule_name": detection["rule_name"], "rule_type": detection["rule_type"],
+            "severity": detection["severity"], "technique_id": detection["technique_id"],
+            "root_cause": cause_text, "where_machine": machine, "where_locus": locus,
+            "when_first_utc": d["when_first_utc"], "when_last_utc": d["when_last_utc"],
+            "hit_count": d["hit_count"], "investigation_hint": hint,
+        })
+        category = evidence.get("cause_category")
+        if category:
+            item = {
+                "category": category,
+                "rule_name": detection["rule_name"],
+                "severity": detection["severity"],
+                "detected_at_utc": detection["detected_at_utc"],
+                "investigation_hint": hint,
+            }
+            if item not in source_hypotheses:
+                source_hypotheses.append(item)
     return {
         "host": dict(host),
         "risk": risk,
         "chain": chain,
         "timeline": tl,
-        "detections": [dict(d) for d in detections],
+        "detections": detection_dicts,
         "ioc_hits": [dict(d) for d in ioc_hits],
+        "source_hypotheses": source_hypotheses,
+        "root_cause_rows": root_cause_rows,
         "manifests": [dict(m) for m in manifests],
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -70,12 +188,13 @@ def _short_ts(ts):
 
 
 def _mitre_link(technique_id, style):
-    if not technique_id:
-        return "-"
-    url = f"{MITRE_BASE_URL}{technique_id}/"
+    tid = technique_id if isinstance(technique_id, str) else ""
+    if not re.fullmatch(r"T\d{4}(?:\.\d{3})?", tid, re.ASCII):
+        return html.escape(str(technique_id)) if technique_id else "-"
+    url = f"{MITRE_BASE_URL}{tid.replace('.', '/')}/"
     return (
         f'<a href="{url}" color="{LINK_COLOR}">'
-        f'<u>{html.escape(technique_id)}</u></a>'
+        f'<u>{html.escape(tid)}</u></a>'
     )
 
 
@@ -200,6 +319,40 @@ def _trend_chart(conn, host_id):
     return d
 
 
+def record_report(conn, host_id, kind, path, data=None, generated_by="analyst"):
+    """Record a generated report in report_history (best-effort).
+
+    Gives every endpoint a downloadable, filterable report history. Never raises
+    - a history-write failure must not break the actual report download.
+    """
+    try:
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        risk_level = None
+        if data and data.get("risk"):
+            counts.update(data["risk"].get("counts") or {})
+            risk_level = data["risk"].get("risk_level")
+        else:
+            for r in conn.execute(
+                "SELECT severity, COUNT(*) n FROM detections WHERE host_id=? GROUP BY severity",
+                (host_id,)):
+                if r["severity"] in counts:
+                    counts[r["severity"]] = r["n"]
+        total = sum(counts.values())
+        size = os.path.getsize(path) if path and os.path.exists(path) else None
+        conn.execute(
+            """INSERT INTO report_history
+               (host_id, kind, filename, path, generated_at_utc, generated_by, size_bytes,
+                detection_total, critical, high, medium, low, risk_level)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (host_id, kind, os.path.basename(path), path,
+             datetime.now(timezone.utc).isoformat(timespec="seconds"), generated_by, size,
+             total, counts["critical"], counts["high"], counts["medium"], counts["low"], risk_level),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
 def generate_pdf(conn, host_id, out_path=None):
     from reportlab.lib import colors
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -258,9 +411,11 @@ def generate_pdf(conn, host_id, out_path=None):
         ("2. Detection Analytics", "sec-analytics"),
         ("3. Observed Attack Chain", "sec-chain"),
         ("4. ATT&amp;CK Coverage Matrix", "sec-matrix"),
-        ("5. Technical Annex - Detections", "sec-detections"),
-        ("6. Timeline Highlights", "sec-timeline"),
-        ("7. Evidence Integrity", "sec-manifests"),
+        ("5. Root Cause Analysis (What / Where / When)", "sec-rootcause"),
+        ("6. Technical Annex - Detections", "sec-detections"),
+        ("7. Source of Compromise Assessment", "sec-source"),
+        ("8. Timeline Highlights", "sec-timeline"),
+        ("9. Evidence Integrity", "sec-manifests"),
     ]:
         story.append(PH(f'<a href="#{key}" color="{LINK_COLOR}">{label}</a>', tocLink))
     story.append(Spacer(1, 4 * mm))
@@ -408,6 +563,49 @@ def generate_pdf(conn, host_id, out_path=None):
     story.append(P("* = tactic observed on this host", note))
     story.append(Spacer(1, 5 * mm))
 
+    story.append(anchored_heading("Root Cause Analysis (What / Where / When)", "sec-rootcause"))
+    rc_rows = data.get("root_cause_rows") or []
+    if rc_rows:
+        story.append(P(
+            "Every detection below is stated as: what fired, its inferred root "
+            "cause, where it happened (host and the exact process / file / "
+            "network locus), and when (first seen - last seen, UTC). Root cause "
+            "is an evidence-based inference, not confirmed attribution.",
+            body,
+        ))
+        root_head = [["When (UTC, first - last)", "What (rule)", "Sev", "Root cause", "Where"]]
+        for item in rc_rows[:60]:
+            when = _short_ts(item["when_first_utc"])
+            if item["when_last_utc"] and item["when_last_utc"] != item["when_first_utc"]:
+                when += "\n- " + _short_ts(item["when_last_utc"])
+            if item.get("hit_count", 1) > 1:
+                when += f"\n(x{item['hit_count']})"
+            where = item["where_machine"]
+            if item.get("where_locus"):
+                where += "\n" + item["where_locus"]
+            root_head.append([
+                P(when, cellMono),
+                P(item["rule_name"], cellB),
+                P(item["severity"]),
+                P(item["root_cause"]),
+                P(where, cellMono),
+            ])
+        rc_table = RLTable(root_head, colWidths=[30 * mm, 34 * mm, 13 * mm, 45 * mm, 60 * mm],
+                           repeatRows=1)
+        rc_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, HexColor("#f8fafc")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(rc_table)
+    else:
+        story.append(P("No detections recorded for this host.", body))
+    story.append(Spacer(1, 5 * mm))
+
     story.append(anchored_heading("Technical Annex - Key Detections", "sec-detections"))
     det_rows = [["Time (UTC)", "Type", "Rule", "Sev", "MITRE", "Detail"]]
     for d in data["detections"][:40]:
@@ -437,6 +635,46 @@ def generate_pdf(conn, host_id, out_path=None):
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(dt)
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(anchored_heading("Source of Compromise Assessment", "sec-source"))
+    source_hypotheses = data.get("source_hypotheses") or []
+    if source_hypotheses:
+        story.append(P(
+            "The following are evidence-based investigation hypotheses, not "
+            "confirmed attribution or proof of user fault. Correlate mail, "
+            "browser, proxy, authentication, endpoint, and change-management "
+            "records before assigning responsibility.",
+            body,
+        ))
+        source_rows = [["Hypothesis", "Detection", "Severity", "Investigation guidance"]]
+        for item in source_hypotheses[:20]:
+            source_rows.append([
+                P(item["category"], cellMono),
+                P(item["rule_name"]),
+                P(item["severity"]),
+                P(item["investigation_hint"] or "-"),
+            ])
+        source_table = RLTable(
+            source_rows, colWidths=[42 * mm, 42 * mm, 18 * mm, 80 * mm], repeatRows=1
+        )
+        source_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, HexColor("#f8fafc")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(source_table)
+    else:
+        story.append(P(
+            "No source-of-compromise hypothesis was attached to the available "
+            "detections. Review the timeline and raw evidence for delivery and "
+            "user-action telemetry.",
+            body,
+        ))
     story.append(Spacer(1, 5 * mm))
 
     story.append(anchored_heading("Timeline Highlights", "sec-timeline"))
@@ -532,15 +770,21 @@ def generate_pdf(conn, host_id, out_path=None):
         canvas.restoreState()
 
     doc.build(story, onFirstPage=decorate, onLaterPages=decorate)
+    record_report(conn, host_id, "pdf", out_path, data)
     return out_path
 
 def generate_json(conn, host_id, out_path=None):
     data = host_report_data(conn, host_id)
     if data is None:
         return None
-    out_path = out_path or os.path.join(_ensure_dir(), f"report_host{host_id}.json")
+    stamped = out_path is None
+    out_path = out_path or os.path.join(
+        _ensure_dir(),
+        f"report_host{host_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, default=str)
+    if stamped:
+        record_report(conn, host_id, "json", out_path, data)
     return out_path
 
 
@@ -592,9 +836,14 @@ def generate_stix(conn, host_id, out_path=None):
         "id": "bundle--" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"ator:host{host_id}:{ts}")),
         "objects": objects,
     }
-    out_path = out_path or os.path.join(_ensure_dir(), f"stix_host{host_id}.json")
+    stamped = out_path is None
+    out_path = out_path or os.path.join(
+        _ensure_dir(),
+        f"stix_host{host_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(bundle, fh, indent=2)
+    if stamped:
+        record_report(conn, host_id, "stix", out_path, None)
     return out_path
 
 

@@ -1,0 +1,9 @@
+{% if tree.nodes %}
+<p class="small text-muted">Latest process collection: <span class="mono">{{ tree.collection_id }}</span>. Parent IDs show ancestry; this is a snapshot, not a live process monitor. Command previews are limited to 160 characters.</p>
+<div class="table-responsive">
+  <table class="table table-hover align-middle ator-table mb-0" data-investigation-process-table aria-label="Process snapshot">
+    <thead><tr><th>Process</th><th>PID</th><th>Parent PID</th><th>Command preview</th></tr></thead>
+    <tbody>{% for n in tree.nodes %}<tr><td><strong>{{ n.name or 'Unnamed process' }}</strong></td><td class="mono">{{ n.pid }}</td><td class="mono">{{ n.ppid if n.ppid is not none else 'Unknown' }}</td><td><details><summary class="small">View command</summary><pre class="investigation-evidence">{{ n.cmdline or 'No command line collected.' }}</pre></details></td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+{% else %}<p class="empty-hint">No process snapshot collected for this endpoint.</p>{% endif %}

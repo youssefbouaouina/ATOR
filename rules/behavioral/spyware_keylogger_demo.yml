@@ -1,0 +1,23 @@
+title: Spyware / Keylogger Activity (Demo)
+id: 9fe63f8e-2afc-502c-913a-a96b88d66504
+status: test
+description: >
+    Detects the harmless demo marker representing spyware / keylogger behaviour
+    capturing user input or credentials. Cross-platform.
+x-ator-cause: spyware_keylogger_credential_theft
+x-ator-investigation-hint: >
+    Root cause is a monitoring/credential-theft implant running in user context.
+    Determine which user session was targeted, the implant's on-disk location and
+    autostart mechanism, and whether captured data was staged or exfiltrated.
+    Correlate with the persistence and command-and-control detections on this host.
+logsource:
+    category: process_creation
+detection:
+    selection:
+        CommandLine|contains: 'ATOR_DEMO_SPYWARE_KEYLOGGER'
+    condition: selection
+tags:
+    - attack.collection
+    - attack.credential-access
+    - attack.t1056.001
+level: high

@@ -84,8 +84,14 @@ def _load_yara_rules():
         import yara
     except ImportError:
         return None
-    rules_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "rules", "malware")
-    if not os.path.isdir(rules_dir):
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.environ.get("ATOR_RULES_DIR"),
+        os.path.join(os.path.dirname(os.path.dirname(module_dir)), "rules", "malware"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(module_dir))), "rules", "malware"),
+    ]
+    rules_dir = next((path for path in candidates if path and os.path.isdir(path)), None)
+    if not rules_dir:
         return None
     filepaths = {}
     for idx, yar in enumerate(sorted(glob.glob(os.path.join(rules_dir, "*.yar")))):

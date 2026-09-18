@@ -6,7 +6,12 @@
     <div class="section-label">Command center</div>
     <h4 class="mb-0">Security overview</h4>
   </div>
-  <span class="trend-chip trend-flat" id="trendChip">&ndash; monitoring</span>
+  <div class="d-flex align-items-center gap-2">
+    <a href="/telemetry" class="footprint-verdict verdict-lightweight text-decoration-none" id="ovFootprint" title="Fleet agent footprint - open Telemetry &amp; Resources">
+      <span class="dot"></span><span id="ovFootprintText">agent footprint</span>
+    </a>
+    <span class="trend-chip trend-flat" id="trendChip">&ndash; monitoring</span>
+  </div>
 </div>
 
 <div class="row g-3 mb-4 stagger">
@@ -31,6 +36,52 @@
       <div class="kpi-value" data-count="{{ manifests }}" data-kpi="manifests">{{ manifests }}</div>
       <span class="text-muted small">evidence collections</span>
     </div></div>
+  </div>
+</div>
+
+<div class="card ator-card mb-4 anim-rise" id="endpointsPanel">
+  <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+    <span>Endpoints overview <span class="chip-count" id="epShown">0</span></span>
+    <span class="header-live"><span class="pulse-dot is-live"></span> per-endpoint separation</span>
+  </div>
+  <div class="filter-bar">
+    <div class="filter-group flex-grow-1">
+      <input type="search" id="epSearch" class="filter-input w-100" placeholder="Search endpoint by name&hellip;">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Platform</label>
+      <div class="segmented" id="epOs">
+        <button class="seg active" data-os="">All</button>
+        <button class="seg" data-os="windows">Windows</button>
+        <button class="seg" data-os="linux">Linux</button>
+        <button class="seg" data-os="docker_host">Docker</button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Status</label>
+      <div class="segmented" id="epStatus">
+        <button class="seg active" data-status="">All</button>
+        <button class="seg" data-status="running">Online</button>
+        <button class="seg" data-status="offline">Offline</button>
+        <button class="seg" data-status="paused">Paused</button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="epSort">Sort</label>
+      <select id="epSort" class="filter-input">
+        <option value="risk">Risk (high first)</option>
+        <option value="detections">Detections</option>
+        <option value="name">Name</option>
+        <option value="recent">Recent activity</option>
+      </select>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="endpoint-grid" id="endpointGrid">
+      <div class="skeleton" style="height:96px"></div>
+      <div class="skeleton" style="height:96px"></div>
+      <div class="skeleton" style="height:96px"></div>
+    </div>
   </div>
 </div>
 
@@ -60,7 +111,7 @@
       <div class="feed-panel" id="liveFeed" aria-live="polite" aria-label="Live detection feed">
         {% for d in recent %}
         <div class="feed-item sev-{{ d.severity }}">
-          <span class="feed-time">{{ d.detected_at_utc }}</span>
+          <span class="feed-time" data-ator-time="{{ d.detected_at_utc }}">{{ d.detected_at_utc }}</span>
           <span class="badge sev-badge badge-{{ d.severity }}">{{ d.severity }}</span>
           <div>
             <div class="feed-title">{{ d.rule_name }}</div>
@@ -80,10 +131,10 @@
       <div class="card-header">Detection history</div>
       <div class="card-body p-0">
         <table class="table table-sm table-hover mb-0 data ator-table" data-interactive>
-          <thead><tr><th data-sort>Time (UTC)</th><th data-sort>Host</th><th data-sort>Rule</th><th data-sort>Type</th><th data-sort>Severity</th><th data-sort>MITRE</th></tr></thead>
+          <thead><tr><th data-sort>Time (dashboard timezone)</th><th data-sort>Host</th><th data-sort>Rule</th><th data-sort>Type</th><th data-sort>Severity</th><th data-sort>MITRE</th></tr></thead>
           <tbody>
           {% for d in recent %}
-            <tr><td class="mono">{{ d.detected_at_utc }}</td><td>{{ d.hostname }}</td>
+            <tr><td class="mono"><span data-ator-time="{{ d.detected_at_utc }}">{{ d.detected_at_utc }}</span></td><td>{{ d.hostname }}</td>
                 <td>{{ d.rule_name }}</td><td><span class="badge bg-secondary">{{ d.rule_type }}</span></td>
                 <td><span class="badge sev-badge badge-{{ d.severity }}">{{ d.severity }}</span></td>
                 <td class="mono">{{ d.technique_id or '-' }}</td></tr>
@@ -97,4 +148,105 @@
     <p class="kbd-hint mt-2">Tip: press <kbd class="kbd-hint-key">/</kbd> to search the focused table.</p>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var grid = document.getElementById("endpointGrid");
+  if (!grid) return;
+  var filters = { q: "", os: "", status: "" };
+  var sort = "risk";
+  var data = [];
+
+  function osBadge(os) { return '<span class="badge bg-dark">' + os + '</span>'; }
+  function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  function statusPill(s) {
+    var map = { running: ["online", "online"], paused: ["warn", "paused"],
+                offline: ["offline", "offline"], never: ["offline", "no data"],
+                stale: ["warn", "stale"], revoked: ["revoked", "revoked"] };
+    var m = map[s] || ["offline", s || "unknown"];
+    return '<span class="status-pill ' + m[0] + '"><span class="dot"></span>' + m[1] + '</span>';
+  }
+  function riskScore(e) { return e.critical * 1000 + e.high * 50 + e.medium * 5 + e.low; }
+
+  function card(e) {
+    var sev = [["critical", e.critical], ["high", e.high], ["medium", e.medium], ["low", e.low]]
+      .map(function (p) { return '<span class="sev-chip badge-' + p[0] + '" title="' + p[0] + '">' + (p[1] || 0) + '</span>'; }).join("");
+    var last = e.last_detection_utc ? String(e.last_detection_utc).replace("T", " ").slice(0, 16) + " UTC" : "no detections";
+    var risky = riskScore(e) > 0;
+    return '<a class="endpoint-card' + (risky ? " has-risk" : "") + (e.is_active ? "" : " is-revoked") + '" href="/investigation?host_id=' + e.id + '">' +
+      '<div class="ep-top"><span class="ep-name" title="' + esc(e.hostname) + '">' + esc(e.hostname) + '</span>' + statusPill(e.agent_status) + '</div>' +
+      '<div class="ep-meta">' + osBadge(esc(e.os_type)) + (e.docker_engine_flag ? ' <span class="badge bg-info-subtle text-dark">docker</span>' : "") +
+        '<span class="ep-total">' + e.detection_total + ' detection' + (e.detection_total === 1 ? "" : "s") + '</span></div>' +
+      '<div class="ep-sev">' + sev + '</div>' +
+      '<div class="ep-foot">' + esc(last) + '</div>' +
+    '</a>';
+  }
+
+  function apply() {
+    var q = filters.q.toLowerCase();
+    var rows = data.filter(function (e) {
+      if (q && e.hostname.toLowerCase().indexOf(q) === -1) return false;
+      if (filters.os && e.os_type !== filters.os) return false;
+      if (filters.status) {
+        // Online = running; Paused = paused; Offline = anything not live.
+        var bucket = e.agent_status === "running" ? "running"
+                   : e.agent_status === "paused" ? "paused" : "offline";
+        if (bucket !== filters.status) return false;
+      }
+      return true;
+    });
+    rows.sort(function (a, b) {
+      if (sort === "name") return a.hostname.localeCompare(b.hostname);
+      if (sort === "detections") return b.detection_total - a.detection_total;
+      if (sort === "recent") return String(b.last_detection_utc || "").localeCompare(String(a.last_detection_utc || ""));
+      return riskScore(b) - riskScore(a);
+    });
+    document.getElementById("epShown").textContent = rows.length;
+    grid.innerHTML = rows.length
+      ? rows.map(card).join("")
+      : '<div class="empty-hint" style="grid-column:1/-1">No endpoints match these filters.</div>';
+  }
+
+  function load() {
+    fetch("/api/v1/stats/endpoints").then(function (r) { return r.json(); })
+      .then(function (rows) { data = rows || []; apply(); })
+      .catch(function () { grid.innerHTML = '<div class="empty-hint" style="grid-column:1/-1">Could not load endpoints.</div>'; });
+  }
+
+  var searchTimer;
+  document.getElementById("epSearch").addEventListener("input", function () {
+    filters.q = this.value; clearTimeout(searchTimer); searchTimer = setTimeout(apply, 120);
+  });
+  document.getElementById("epOs").addEventListener("click", function (e) {
+    var b = e.target.closest(".seg"); if (!b) return;
+    this.querySelectorAll(".seg").forEach(function (s) { s.classList.remove("active"); });
+    b.classList.add("active"); filters.os = b.dataset.os; apply();
+  });
+  document.getElementById("epStatus").addEventListener("click", function (e) {
+    var b = e.target.closest(".seg"); if (!b) return;
+    this.querySelectorAll(".seg").forEach(function (s) { s.classList.remove("active"); });
+    b.classList.add("active"); filters.status = b.dataset.status; apply();
+  });
+  document.getElementById("epSort").addEventListener("change", function () { sort = this.value; apply(); });
+
+  load();
+  setInterval(load, (window.ATOR && window.ATOR.refreshInterval) || 8000);
+
+  // Fleet agent-footprint chip (links to Telemetry & Resources).
+  var fp = document.getElementById("ovFootprint");
+  function loadFootprint() {
+    if (!fp) return;
+    fetch("/api/v1/stats/footprint").then(function (r) { return r.json(); }).then(function (f) {
+      fp.className = "footprint-verdict verdict-" + String(f.verdict).toLowerCase() + " text-decoration-none";
+      document.getElementById("ovFootprintText").textContent =
+        f.verdict + " · " + f.avg_agent_cpu_pct + "% CPU · " + Math.round(f.total_agent_mem_mb) + " MB";
+    }).catch(function () {});
+  }
+  loadFootprint();
+  setInterval(loadFootprint, 8000);
+})();
+</script>
 {% endblock %}

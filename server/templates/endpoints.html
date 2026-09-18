@@ -10,6 +10,24 @@
 python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span class="text-muted">(server_url + api_key stored in agent/config.json)</span>
 </div></div>
 
+<div class="alert alert-warning small anim-rise mb-3" id="agentCommandAlert" style="display:none;">
+  <div><b id="agentCommandTitle">Last command</b> <span class="mono small" id="agentCommandAt"></span></div>
+  <div class="mono small" id="agentCommandBody"></div>
+</div>
+<script>
+(function () {
+  var last = null;
+  try { last = JSON.parse(sessionStorage.getItem("atorLastCommandResult") || "null"); } catch (e) {}
+  if (last && last.body) {
+    var alertEl = document.getElementById("agentCommandAlert");
+    document.getElementById("agentCommandTitle").textContent = "Last command (" + (last.host || "host") + ")";
+    document.getElementById("agentCommandAt").textContent = last.at || "";
+    document.getElementById("agentCommandBody").textContent = last.body;
+    alertEl.style.display = "";
+  }
+})();
+</script>
+
 <!-- Search / filter toolbar -->
 <div class="card ator-card mb-3"><div class="card-body py-2">
   <div class="row g-2 align-items-end">
@@ -38,38 +56,97 @@ python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span cla
     <div class="col-md-2 text-end">
       <button class="btn btn-sm btn-outline-secondary w-100" id="epClear">Clear</button>
     </div>
+    <div class="col-md-2 form-check form-switch d-flex align-items-center justify-content-end" title="Show only agents whose last heartbeat is fresh">
+      <input class="form-check-input" type="checkbox" role="switch" id="epOnline" checked>
+      <label class="form-check-label small ms-2" for="epOnline">Hide offline agents</label>
+    </div>
   </div>
 </div></div>
 
 <div class="card ator-card">
   <div class="card-body p-0">
     <table class="table table-hover data ator-table mb-0" data-interactive data-interactive-empty="1" id="epTable">
-      <thead><tr><th data-sort>ID</th><th data-sort>Client ID</th><th data-sort>Hostname</th><th data-sort>OS</th><th data-sort>Docker</th><th data-sort>Last seen (UTC)</th><th data-sort>Detections</th><th data-sort>Status</th><th></th></tr></thead>
+      <thead><tr><th data-sort>ID</th><th data-sort>Client ID</th><th data-sort>Hostname</th><th data-sort>OS</th><th data-sort>Docker</th><th data-sort>Last seen (dashboard timezone)</th><th data-sort>Detections</th><th data-sort>Enrollment</th><th data-sort>Status</th><th></th></tr></thead>
       <tbody>
       {% for h in hosts %}
         <tr data-host-id="{{ h.id }}" data-hostname="{{ h.hostname|lower }}" data-client="{{ h.client_id|lower }}"
-            data-platform="{{ h.os_type }}" data-status="{{ 'active' if h.is_active else 'revoked' }}">
+            data-platform="{{ h.os_type }}" data-status="{{ 'active' if h.is_active else 'revoked' }}"
+            data-agent-status="{{ h.agent_status }}"
+            data-enrollment="{{ h.enrollment_status or 'none' }}">
           <td>{{ h.id }}</td><td class="mono">{{ h.client_id }}</td><td><b>{{ h.hostname }}</b></td>
           <td><span class="badge bg-dark">{{ h.os_type }}</span></td>
           <td>{{ 'yes' if h.docker_engine_flag else '-' }}</td>
-          <td class="mono">{{ h.last_seen_utc or 'never' }}</td>
+          <td class="mono">{% if h.last_seen_utc %}<span data-ator-time="{{ h.last_seen_utc }}">{{ h.last_seen_utc }}</span>{% else %}never{% endif %}</td>
           <td>{{ h.detection_count }}</td>
-          <td>{% if h.is_active %}<span class="status-pill online"><span class="dot"></span>active</span>{% else %}<span class="status-pill revoked"><span class="dot"></span>revoked</span>{% endif %}</td>
           <td>
+            {% if h.enrollment_status == 'pending' %}
+              <span class="badge bg-warning text-dark">Pending</span>
+            {% elif h.enrollment_status == 'accepted' %}
+              <span class="badge bg-info">Approved</span>
+            {% elif h.enrollment_status == 'enrolled' %}
+              <span class="badge bg-success">Enrolled</span>
+            {% elif h.enrollment_status == 'rejected' %}
+              <span class="badge bg-danger">Rejected</span>
+            {% elif h.enrollment_status == 'expired' %}
+              <span class="badge bg-warning text-dark">Expired</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+            {% if h.enrollment_token %}
+              <br><small class="text-muted mono">Token: {{ h.enrollment_token[:8] }}…</small>
+            {% endif %}
+          </td>
+          <td id="agentStatusCell{{ h.id }}">
+            {% if h.agent_status == 'running' %}
+              <span class="status-pill online"><span class="dot"></span>running</span>
+            {% elif h.agent_status == 'paused' %}
+              <span class="status-pill warn"><span class="dot"></span>paused</span>
+            {% elif h.agent_status == 'offline' %}
+              <span class="status-pill offline"><span class="dot"></span>offline</span>
+            {% elif h.agent_status == 'revoked' %}
+              <span class="status-pill revoked"><span class="dot"></span>revoked</span>
+            {% else %}
+              <span class="status-pill offline"><span class="dot"></span>never seen</span>
+            {% endif %}
+            {% if h.agent_version %}<div><small class="text-muted mono">v{{ h.agent_version }}</small></div>{% endif %}
+          </td>
+          <td id="actionsCell{{ h.id }}" class="text-nowrap">
             {% if h.is_active %}
+            <form method="post" action="/ui/endpoints/{{ h.id }}/agent-state"
+                  data-ajax data-api="/api/v1/hosts/{{ h.id }}/agent/state"
+                  data-success-message="{{ 'Resuming agent' if h.agent_desired_state == 'paused' else 'Pausing agent' }} for {{ h.hostname }}"
+                  class="d-inline" onsubmit="return false;">
+              <input type="hidden" name="state" value="{{ 'running' if h.agent_desired_state == 'paused' else 'paused' }}">
+              <input type="hidden" name="requested_by" value="analyst-ui">
+              {% if h.agent_desired_state == 'paused' %}
+                <button type="submit" class="btn btn-outline-success btn-sm" data-loading-label="...">Resume</button>
+              {% else %}
+                <button type="submit" class="btn btn-outline-warning btn-sm" data-loading-label="...">Pause</button>
+              {% endif %}
+            </form>
+            <form method="post" action="/ui/endpoints/{{ h.id }}/collect"
+                  data-ajax data-api="/api/v1/hosts/{{ h.id }}/collect"
+                  data-success-message="Collection queued for {{ h.hostname }}"
+                  class="d-inline" onsubmit="return false;">
+              <button type="submit" class="btn btn-outline-primary btn-sm" data-loading-label="...">Collect</button>
+            </form>
+            <form method="post" action="/ui/endpoints/{{ h.id }}/scan"
+                  data-ajax data-api="/api/v1/hosts/{{ h.id }}/scan"
+                  data-success-message="Scan complete for {{ h.hostname }}"
+                  class="d-inline" onsubmit="return false;">
+              <button type="submit" class="btn btn-outline-info btn-sm" data-loading-label="Scanning">Scan</button>
+            </form>
             <form method="post" action="/ui/endpoints/{{ h.id }}/revoke"
                   data-ajax data-api="/api/v1/hosts/{{ h.id }}/revoke"
-                  data-on-success="reload-badge remove-row"
                   data-success-message="API key revoked for {{ h.hostname }}"
                   class="d-inline" onsubmit="return false;">
-              <button type="submit" class="btn btn-outline-danger btn-sm"
-                      data-loading-label="Revoking">Revoke</button>
+              <button type="submit" class="btn btn-outline-danger btn-sm" data-loading-label="Revoking">Revoke</button>
             </form>
             {% endif %}
           </td>
         </tr>
       {% else %}
-        <tr class="empty-hint-row"><td colspan="9"><div class="empty-hint">No endpoints enrolled.</div></td></tr>
+        <tr class="empty-hint-row"><td colspan="10"><div class="empty-hint">No endpoints enrolled.</div></td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -77,11 +154,36 @@ python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span cla
 </div>
 
 <script>
+document.addEventListener("ator:action-success", function (ev) {
+  var path = (ev.detail && ev.detail.path) || "";
+  var m = path.match(/\/api\/v1\/hosts\/(\d+)\/(collect|scan|agent\/state)$/);
+  if (!m) return;
+  var result = (ev.detail && ev.detail.result) || {};
+  var body;
+  if (m[2] === "scan") {
+    body = "detections now on host: " + (result.host_detections != null ? result.host_detections : "n/a")
+         + " · new this scan: " + (result.total_new_detections != null ? result.total_new_detections : "n/a");
+  } else if (m[2] === "collect") {
+    body = "agent will collect on its next heartbeat (status " + (result.status || "queued") + ")";
+  } else {
+    body = "desired state: " + (result.desired_state || (result.state || "ok"));
+  }
+  var tr = document.querySelector('tr[data-host-id="' + m[1] + '"]');
+  var hostname = tr ? (tr.getAttribute("data-hostname") || m[1]) : m[1];
+  try {
+    sessionStorage.setItem("atorLastCommandResult", JSON.stringify({
+      host: decodeURIComponent(hostname), at: new Date().toISOString().replace("T", " ").slice(0, 19) + "Z", body: body,
+    }));
+  } catch (e) {}
+  window.location.reload();
+});
+
 (function () {
   "use strict";
   var search = document.getElementById("epSearch");
   var platform = document.getElementById("epPlatform");
   var status = document.getElementById("epStatus");
+  var onlineOnly = document.getElementById("epOnline");
   var clearBtn = document.getElementById("epClear");
   var countEl = document.getElementById("epCount");
   var tbody = document.querySelector("#epTable tbody");
@@ -91,12 +193,14 @@ python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span cla
     var q = (search.value || "").toLowerCase().trim();
     var pf = platform.value;
     var sf = status.value;
+    var live = onlineOnly ? onlineOnly.checked : false;
     var shown = 0;
     tbody.querySelectorAll("tr[data-host-id]").forEach(function (tr) {
       var ok = true;
       if (q && tr.dataset.hostname.indexOf(q) === -1 && tr.dataset.client.indexOf(q) === -1) ok = false;
       if (pf && tr.dataset.platform !== pf) ok = false;
       if (sf && tr.dataset.status !== sf) ok = false;
+      if (live && tr.dataset.agentStatus === "offline") ok = false;
       tr.style.display = ok ? "" : "none";
       if (ok) shown++;
     });
@@ -108,8 +212,11 @@ python -m agent.agent enroll && python -m agent.agent loop &nbsp;&nbsp;<span cla
   search.addEventListener("input", apply);
   platform.addEventListener("change", apply);
   status.addEventListener("change", apply);
+  if (onlineOnly) onlineOnly.addEventListener("change", apply);
   clearBtn.addEventListener("click", function () {
-    search.value = ""; platform.value = ""; status.value = ""; apply();
+    search.value = ""; platform.value = ""; status.value = "";
+    if (onlineOnly) onlineOnly.checked = false;
+    apply();
   });
 })();
 </script>

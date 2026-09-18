@@ -1,0 +1,18 @@
+{% if detections %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle ator-table mb-0" data-interactive aria-label="Grouped findings">
+    <thead><tr><th>Severity</th><th>Finding / rule</th><th>ATT&amp;CK technique</th><th>Hits</th><th>Observed window (dashboard timezone)</th></tr></thead>
+    <tbody>
+    {% for d in detections %}
+      <tr>
+        <td><span class="badge sev-badge badge-{{ d.severity }}">{{ d.severity }}</span></td>
+        <td><strong>{{ d.rule_name }}</strong><div class="small text-muted">{{ d.rule_type|upper }}</div></td>
+        <td>{{ d.technique_name or 'Not mapped' }}<div class="mono">{{ d.technique_id or '—' }}</div></td>
+        <td>{{ d.hits }}</td>
+        <td class="small"><div>First: <span class="mono">{% if d.first_seen %}<span data-ator-time="{{ d.first_seen }}">{{ d.first_seen }}</span>{% else %}Unknown{% endif %}</span></div><div>Last: <span class="mono">{% if d.last_seen %}<span data-ator-time="{{ d.last_seen }}">{{ d.last_seen }}</span>{% else %}Unknown{% endif %}</span></div></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}<p class="empty-hint">No detections recorded for this endpoint. This does not confirm the endpoint is clean.</p>{% endif %}

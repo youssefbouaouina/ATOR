@@ -20,7 +20,7 @@
         var time = (ev.detected_at_utc || "").replace("T", " ").slice(0, 19);
         var sev = (ev.severity || "info").toLowerCase();
         return '<div class="feed-item sev-' + esc(sev) + (fresh ? " fresh" : "") + '" data-detection-id="' + esc(ev.id) + '">' +
-            '<span class="feed-time">' + esc(time) + "</span>" +
+            '<span class="feed-time" data-ator-time="' + esc(ev.detected_at_utc || "") + '">' + esc(time) + "</span>" +
             '<span class="badge sev-badge badge-' + esc(sev) + '">' + esc(sev) + "</span>" +
             "<div><div class=\"feed-title\">" + esc(ev.rule_name) + "</div>" +
             '<div class="feed-meta">' + esc(ev.hostname || "") +
@@ -39,6 +39,9 @@
         wrap.innerHTML = feedItemHtml(ev, fresh).trim();
         var node = wrap.content.firstChild;
         feedList.prepend(node);
+        if (window.ATOR && window.ATOR.dashboard && window.ATOR.dashboard.formatLocalTimestamp) {
+            window.ATOR.dashboard.formatLocalTimestamp(ev.detected_at_utc);
+        }
         while (feedList.children.length > maxItems) feedList.lastElementChild.remove();
         setTimeout(function () { node.classList.remove("fresh"); }, 2600);
         if (fresh && ev.severity === "critical" && toast) {

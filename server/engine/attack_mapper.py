@@ -76,6 +76,50 @@ def lookup(technique_id):
     return idx["techniques"].get((technique_id or "").upper())
 
 
+def load_techniques():
+    """Flat technique list for pickers (policy builder, coverage views)."""
+    idx = load_index()
+    techs = [
+        t for t in idx["techniques"].values()
+        if not t.get("deprecated") and not t.get("revoked")
+    ]
+    techs.sort(key=lambda t: (t["id"], t["name"] or ""))
+    return techs
+
+
+def load_techniques_by_tactic():
+    """Techniques grouped by tactic for hierarchical picker UI."""
+    idx = load_index()
+    techs = [
+        t for t in idx["techniques"].values()
+        if not t.get("deprecated") and not t.get("revoked")
+    ]
+    by_tactic = {}
+    for t in techs:
+        for tactic in t.get("tactics", []):
+            key = tactic["short"]
+            if key not in by_tactic:
+                by_tactic[key] = {"short": key, "name": tactic["name"], "techniques": []}
+            by_tactic[key]["techniques"].append({
+                "id": t["id"],
+                "name": t["name"],
+                "is_subtechnique": t.get("is_subtechnique", False),
+            })
+    # Sort tactics by TACTIC_ORDER
+    ordered = []
+    for short in TACTIC_ORDER:
+        if short in by_tactic:
+            tactics_entry = by_tactic[short]
+            tactics_entry["techniques"].sort(key=lambda x: (not x["is_subtechnique"], x["id"]))
+            ordered.append(tactics_entry)
+    # Add any tactics not in TACTIC_ORDER
+    for short, entry in by_tactic.items():
+        if short not in TACTIC_ORDER:
+            entry["techniques"].sort(key=lambda x: (not x["is_subtechnique"], x["id"]))
+            ordered.append(entry)
+    return ordered
+
+
 def enrich_detections(conn, detection_ids=None):
     idx = load_index()
     if detection_ids:

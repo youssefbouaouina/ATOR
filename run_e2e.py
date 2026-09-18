@@ -249,7 +249,9 @@ def main():
 
         print("\n=== Phase 5: containment dry-run workflow ===")
         api("POST", "/api/v1/policies", {"name": "e2e-auto", "min_severity": "high", "mode": "approve"})
-        api("POST", "/api/v1/engine/run")
+        # scan_history applies the freshly created policy to recent detections
+        # (the engine otherwise only evaluates genuinely new findings).
+        api("POST", "/api/v1/engine/run?scan_history=true")
         status, pending = api("GET", "/api/v1/approvals")
         check("approval_created_by_policy", len(pending) >= 1, f"pending={len(pending)}")
         if pending:

@@ -286,6 +286,8 @@ def compile_rule(doc):
     return {
         "title": doc.get("title", "untitled"),
         "rule_id": doc.get("id", ""),
+        "cause": doc.get("x-ator-cause"),
+        "investigation_hint": doc.get("x-ator-investigation-hint"),
         "level": (doc.get("level") or "medium").lower(),
         "tags": tags,
         "table": table,
@@ -350,7 +352,12 @@ def run(conn, since_utc=None, host_ids=None, rules_dir=None):
         params = list(rule["params"])
         conditions = []
         if since_utc:
-            conditions.append("t.collected_at_utc > ?")
+            # >= not >: timestamps are second-resolution, so a collection that
+            # lands in the same second as the previous engine run would be
+            # skipped with a strict >, silently dropping its detections. Re-
+            # scanned rows fold into existing detections via insert_detections'
+            # dedupe, so the overlap is harmless.
+            conditions.append("t.collected_at_utc >= ?")
             params.append(since_utc)
         if host_ids:
             placeholders = ",".join("?" for _ in host_ids)
@@ -373,17 +380,23 @@ def run(conn, since_utc=None, host_ids=None, rules_dir=None):
                 "host_id": row["host_id"],
                 "collection_id": row["collection_id"],
                 "detected_at_utc": row["collected_at_utc"],
-                "summary": summarize_hit(row),
+                "summary": summarize_hit(
+                    row, rule.get("cause"), rule.get("investigation_hint")
+                ),
                 "evidence": {"table": rule["table"], "row_id": row["id"], "sigma_id": rule["rule_id"]},
             })
     return fired, errors
 
 
-def summarize_hit(row):
+def summarize_hit(row, cause=None, investigation_hint=None):
     keys = row.keys()
     out = {}
     for k in ("pid", "ppid", "name", "cmdline", "exe_path", "username",
               "remote_ip", "remote_port", "local_ip", "local_port", "proto", "process_name"):
         if k in keys and row[k]:
             out[k] = str(row[k])[:300]
+    if cause:
+        out["cause_category"] = cause
+    if investigation_hint:
+        out["investigation_hint"] = investigation_hint
     return json.dumps(out, default=str)

@@ -1,0 +1,28 @@
+<p class="small text-muted">Showing {{ timeline.events|length }} of {{ timeline.total }} events, limited to the latest 200. Loaded events are oldest first; search and severity filters apply only to these events. Evidence previews may be shortened by the timeline engine.</p>
+{% if timeline.events %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle ator-table mb-0" data-interactive aria-label="Evidence timeline">
+    <thead><tr><th>Time (dashboard timezone)</th><th>Source</th><th>Event and evidence</th></tr></thead>
+    <tbody>
+    {% for e in timeline.events %}
+    <tr>
+      <td class="mono">{% if e.ts %}<span data-ator-time="{{ e.ts }}">{{ e.ts }}</span>{% else %}Unknown timestamp{% endif %}</td>
+      <td><span class="badge bg-secondary">{{ e.kind }}</span>{% if e.severity %}<div class="mt-1"><span class="badge sev-badge badge-{{ e.severity }}">{{ e.severity }}</span></div>{% endif %}</td>
+      <td><strong>{{ e.title }}</strong><details class="mt-2"><summary class="small">View evidence · {{ e.ref }}</summary><pre class="investigation-evidence">{{ e.detail or 'No detail available.' }}</pre></details></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}<p class="empty-hint">No timeline events collected for this endpoint.</p>{% endif %}
+<aside class="investigation-notice mt-3" aria-label="Time skew anomalies">
+  <strong class="small">Time skew checks · {{ timeline.skew|length }} flags</strong>
+  <p class="small text-muted mb-0">Checks cover only the loaded events, not the full history.</p>
+  {% if timeline.skew %}
+  <ul class="small mt-2 mb-0">
+    {% for s in timeline.skew %}
+    <li>{% if s.issue is defined %}No recent events available for a reliable time baseline.{% else %}<span class="mono">{{ s.ref }}</span> — {{ s.skew_days }} days from baseline · {{ s.ts }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="small mb-0">No anomalies flagged in loaded events.</p>{% endif %}
+</aside>

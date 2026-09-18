@@ -92,10 +92,19 @@ def correlate_files(conn, host_id, collection_id, collected_at_utc, files, compi
         matches = f.get("yara_matches")
         for rule_name in matches or []:
             sev_map = {"eicar_test_file": "medium"}
+            evidence = {"path": f["path"], "sha256": sha}
+            if rule_name == "ATOR_DFIR_Demo_Trojan_Payload":
+                evidence.update({
+                    "cause_category": "user_opened_suspicious_attachment",
+                    "investigation_hint": (
+                        "Correlate attachment delivery, file creation, user session, "
+                        "and process ancestry before assigning responsibility"
+                    ),
+                })
             detections.append(_det(
                 host_id, collection_id, collected_at_utc, "yara",
                 f"YARA:{rule_name}", sev_map.get(rule_name.lower(), "high"), None,
-                {"path": f["path"], "sha256": sha},
+                evidence,
             ))
     return detections
 

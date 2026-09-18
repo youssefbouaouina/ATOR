@@ -114,3 +114,49 @@ def test_process_tree(tmp_db):
     assert pids == {1, 100, 101}
     edges = {(e["from"], e["to"]) for e in tree["edges"]}
     assert (1, 100) in edges and (100, 101) in edges
+
+
+def test_timeline_bounds_payloads_and_preserves_total(tmp_db, monkeypatch):
+    from server import db as database
+    from server.engine import timeline
+    conn = database.connect()
+    hid = _host(conn)
+    other = _host(conn, "other")
+    conn.executemany(
+        "INSERT INTO raw_logs (host_id, collected_at_utc, source, event_time_utc, payload_json) VALUES (?,?,?,?,?)",
+        [(hid, "2026-09-17T00:00:00+00:00", "system",
+          f"2026-09-17T00:{i // 60:02d}:{i % 60:02d}+00:00", "{}")
+         for i in range(600)],
+    )
+    _det(conn, other, "2026-09-18T00:00:00+00:00")
+    _det(conn, hid, "2026-09-17T00:10:00+00:00")
+    parsed = []
+    original = timeline.json.loads
+
+    def loads(value, *args, **kwargs):
+        parsed.append(value)
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(timeline.json, "loads", loads)
+    result = timeline_build(conn, hid, limit=10)
+    assert result["total"] == 601
+    assert len(result["events"]) == 10
+    assert len(parsed) <= 11
+    assert result["events"][-1]["kind"] == "detection"
+    assert result["events"][0]["ts"] == "2026-09-17T00:09:51+00:00"
+    assert result["skew_scope"] == "displayed_events"
+    assert timeline_build(conn, hid, limit=0)["events"] == []
+    conn.close()
+
+
+def test_timeline_mixed_timestamp_formats(tmp_db):
+    from server import db as database
+    conn = database.connect()
+    hid = _host(conn)
+    for ts in ("2026-09-17T10:00:00", "2026-09-17T09:00:00Z", "invalid"):
+        _det(conn, hid, ts)
+    result = timeline_build(conn, hid)
+    assert len(result["events"]) == 3
+    assert result["events"][0]["ts"] == "2026-09-17T09:00:00Z"
+    assert result["events"][-1]["_dt"] is None
+    conn.close()

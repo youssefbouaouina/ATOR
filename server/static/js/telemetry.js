@@ -1,408 +1,253 @@
 (function () {
-    "use strict";
+  "use strict";
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var histCache = {};   // host_id -> {t:[], series...}
+  var errors = 0;
 
-    var toast = window.ATOR && window.ATOR.toast;
-    var eventSource = null;
-    var pollTimer = null;
-    var errorCount = 0;
-    var statusDot = null;
-    var streamLabel = null;
-    var lastSampleId = 0;
-    var lastAlertId = 0;
-    var hostsCache = {};
-    var trendChart = null;
-    var selectedHosts = new Set();
-    var currentMetric = "cpu_pct";
-    var currentWindow = 15;
-    var gaugeCache = {};
-    var paused = false;
-    var alertTtl = 8000;
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  function num(v, dp) { return (v == null || isNaN(v)) ? 0 : Number(v).toFixed(dp == null ? 0 : dp); }
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    var u = ["B", "KB", "MB", "GB"], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return n.toFixed(n < 10 && i > 0 ? 1 : 0) + " " + u[i];
+  }
+  function fmtMB(v) { if (v == null || isNaN(v)) return "—"; return v >= 1024 ? (v / 1024).toFixed(1) + " GB" : Number(v).toFixed(0) + " MB"; }
+  function ageSecs(iso) { if (!iso) return 1e9; var d = new Date(String(iso).replace(" ", "T")); return (Date.now() - d.getTime()) / 1000; }
+  function hhmmss(iso) { if (!iso) return "—"; var d = new Date(String(iso).replace(" ", "T")); if (isNaN(d)) return "—"; return d.toISOString().slice(11, 19) + " UTC"; }
 
-    function esc(s) {
-        var d = document.createElement("div");
-        d.textContent = s == null ? "" : String(s);
-        return d.innerHTML;
+  // Smoothly count a number element from its current value to target.
+  function animateNum(el, target, dp) {
+    var start = parseFloat(el.getAttribute("data-cur") || "0") || 0;
+    target = Number(target) || 0;
+    el.setAttribute("data-cur", target);
+    if (reduced || start === target) { el.textContent = dp ? target.toFixed(dp) : Math.round(target); return; }
+    var t0 = null, dur = 600;
+    function step(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min((ts - t0) / dur, 1), e = 1 - Math.pow(1 - p, 3);
+      var v = start + (target - start) * e;
+      el.textContent = dp ? v.toFixed(dp) : Math.round(v);
+      if (p < 1) requestAnimationFrame(step);
     }
+    requestAnimationFrame(step);
+  }
 
-    function humanKbps(v) {
-        if (v == null || v === "") return "—";
-        if (v >= 1024) return (v / 1024).toFixed(1) + " MB/s";
-        return v.toFixed(0) + " KB/s";
+  function setKpis(f) {
+    document.querySelectorAll("[data-kpi]").forEach(function (el) {
+      var k = el.getAttribute("data-kpi");
+      if (!(k in f)) return;
+      var dp = /pct|cpu|mem_mb|collection/.test(k) && k !== "avg_collection_ms" ? 1 : 0;
+      var prev = el.getAttribute("data-cur");
+      animateNum(el, f[k], /avg_agent_cpu_pct|avg_sys_cpu_pct|avg_sys_mem_pct|avg_agent_mem_mb/.test(k) ? 1 : 0);
+      if (prev != null && Number(prev) !== Number(f[k])) {
+        var tile = el.closest(".card-body"); if (tile) { tile.classList.remove("kpi-flash"); void tile.offsetWidth; tile.classList.add("kpi-flash"); }
+      }
+    });
+    var b = document.querySelector("[data-kpi-bytes]");
+    if (b) b.textContent = fmtBytes(f.telemetry_bytes_24h);
+    $("reportingSub").textContent = "of " + f.endpoints + " endpoint" + (f.endpoints === 1 ? "" : "s");
+    $("agentMemAvg").textContent = num(f.avg_agent_mem_mb, 1) + " MB avg / agent";
+    var v = $("verdict"), vt = $("verdictText");
+    vt.textContent = f.verdict + " footprint";
+    v.className = "footprint-verdict verdict-" + f.verdict.toLowerCase();
+  }
+
+  function gaugeColor(pct) { return pct >= 90 ? "#c0392b" : pct >= 70 ? "#d35400" : pct >= 45 ? "#2456a6" : "#1e8e5a"; }
+  function fillCls(pct) { return pct >= 90 ? "crit" : pct >= 70 ? "warn" : ""; }
+
+  function gauge(val, cap, unit) {
+    var pct = Math.max(0, Math.min(100, Number(val) || 0));
+    return '<div><div class="gauge" style="--val:' + (pct * 3.6) + 'deg;--c:' + gaugeColor(pct) + '">' +
+      '<div class="gauge-in"><span class="gv">' + num(val, val < 10 ? 1 : 0) + '</span><span class="gu">' + unit + '</span></div></div>' +
+      '<div class="gauge-cap">' + cap + '</div></div>';
+  }
+
+  function bar(label, pct, valText) {
+    pct = Math.max(0, Math.min(100, Number(pct) || 0));
+    return '<div class="metric-row"><span class="m-label">' + label + '</span>' +
+      '<span class="metric-track"><span class="metric-fill ' + fillCls(pct) + '" style="width:' + pct + '%"></span></span>' +
+      '<span class="m-val">' + valText + '</span></div>';
+  }
+
+  function cardHtml(h, self) {
+    var stale = ageSecs(h.sampled_at_utc) > 90;
+    var memPct = h.mem_pct != null ? h.mem_pct : (h.mem_used_mb && h.mem_total_mb ? h.mem_used_mb / h.mem_total_mb * 100 : 0);
+    var agentSharePct = (self && self.agent_cpu_pct != null && h.cpu_pct) ? Math.min(100, self.agent_cpu_pct / Math.max(h.cpu_pct, 0.1) * 100) : 0;
+    var agentMemPct = (self && self.agent_mem_mb != null && h.mem_total_mb) ? self.agent_mem_mb / h.mem_total_mb * 100 : 0;
+    var status = stale ? '<span class="status-pill offline"><span class="dot"></span>stale</span>'
+                       : '<span class="status-pill online"><span class="dot"></span>live</span>';
+    var hw = [];
+    if (h.cpu_cores) hw.push(h.cpu_cores + " cores");
+    if (h.mem_total_mb) hw.push(fmtMB(h.mem_total_mb) + " RAM");
+    if (h.hw_tier) hw.push(esc(h.hw_tier));
+
+    return '<div class="card ator-card res-card' + (stale ? " stale" : "") + '" data-host="' + h.id + '">' +
+      '<div class="card-header"><div><span class="res-title">' + esc(h.hostname) + '</span> ' +
+        '<span class="badge bg-dark">' + esc(h.os_type || "?") + '</span>' +
+        (h.docker_engine_flag ? ' <span class="badge bg-info-subtle text-dark">docker</span>' : "") +
+        '<div class="res-hw">' + hw.join(" · ") + '</div></div>' + status + '</div>' +
+      '<div class="card-body">' +
+        '<div class="gauge-trio">' +
+          gauge(h.cpu_pct, "System CPU", "%") +
+          gauge(memPct, "System RAM", "%") +
+          gauge(self ? self.agent_cpu_pct : 0, "Agent CPU", "%") +
+        '</div>' +
+        '<div class="spark-box"><canvas></canvas></div>' +
+        bar("Agent RAM", agentMemPct, self ? fmtMB(self.agent_mem_mb) : "—") +
+        bar("Agent CPU share", agentSharePct, num(agentSharePct, 1) + "% of host") +
+        bar("Swap", h.swap_pct, num(h.swap_pct, 0) + "%") +
+        '<div class="res-stats mt-2">' +
+          stat("Threads", self ? self.agent_threads : null) +
+          stat("Open handles", self ? self.agent_fds : null) +
+          stat("Collection", self && self.collection_duration_ms != null ? num(self.collection_duration_ms) + " ms" : null, true) +
+          stat("Payload", self && self.payload_size_bytes != null ? fmtBytes(self.payload_size_bytes) : null, true) +
+          stat("Spool", self ? self.spool_count : null) +
+          stat("Mode", self ? self.telemetry_mode : null, true) +
+        '</div>' +
+        '<div class="d-flex justify-content-between mt-2">' +
+          '<span class="io-chip"><i class="bi bi-arrow-down-up"></i> Net ' + num(h.net_recv_kbps) + '↓ / ' + num(h.net_sent_kbps) + '↑ KB/s</span>' +
+          '<span class="io-chip"><i class="bi bi-hdd"></i> Disk ' + num(h.disk_read_kbps) + 'R / ' + num(h.disk_write_kbps) + 'W</span>' +
+        '</div>' +
+        '<div class="text-muted small mt-1">Last sample: ' + hhmmss(h.sampled_at_utc) + '</div>' +
+      '</div></div>';
+  }
+  function stat(k, v, isText) {
+    var val = v == null || v === "" ? "—" : (isText ? esc(v) : v);
+    return '<div class="res-stat"><span class="rs-k">' + k + '</span><span class="rs-v">' + val + '</span></div>';
+  }
+
+  function updateGauges(card, h, self) {
+    var memPct = h.mem_pct != null ? h.mem_pct : 0;
+    var gs = card.querySelectorAll(".gauge");
+    var vals = [h.cpu_pct || 0, memPct, self ? (self.agent_cpu_pct || 0) : 0];
+    gs.forEach(function (g, i) {
+      var p = Math.max(0, Math.min(100, vals[i]));
+      g.style.setProperty("--val", (p * 3.6) + "deg");
+      g.style.setProperty("--c", gaugeColor(p));
+      var gv = g.querySelector(".gv"); if (gv) gv.textContent = num(vals[i], vals[i] < 10 ? 1 : 0);
+    });
+  }
+
+  function drawSpark(card, hid) {
+    var c = histCache[hid]; if (!c || !c.t.length) return;
+    var canvas = card.querySelector(".spark-box canvas");
+    if (canvas && window.ATOR.charts) {
+      window.ATOR.charts.sparkline(canvas, c.t, [
+        { label: "System CPU", data: c.cpu, color: "#2456a6" },
+        { label: "System RAM", data: c.mem, color: "#8e44ad" },
+        { label: "Agent CPU", data: c.acpu, color: "#1e8e5a" },
+      ]);
     }
+  }
 
-    function humanBytes(v) {
-        if (v == null || v === "") return "—";
-        if (v >= 1024) return (v / 1024).toFixed(1) + " GB";
-        return v.toFixed(0) + " MB";
+  function loadHistory(hid) {
+    return fetch("/api/v1/resources/history?host_id=" + hid + "&minutes=20&metrics=cpu_pct,mem_pct", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var t = [], cpu = [], mem = [];
+        (d.points || []).forEach(function (p) { t.push(hhmmss(p.sampled_at_utc).slice(0, 8)); cpu.push(p.cpu_pct || 0); mem.push(p.mem_pct || 0); });
+        histCache[hid] = histCache[hid] || {}; var c = histCache[hid];
+        c.t = t; c.cpu = cpu; c.mem = mem; c.acpu = c.acpu && c.acpu.length === t.length ? c.acpu : cpu.map(function () { return 0; });
+      });
+  }
+  function loadAgentHistory(hid) {
+    return fetch("/api/v1/agent-self/history?host_id=" + hid + "&minutes=20&metrics=agent_cpu_pct", { cache: "no-store" })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        var c = histCache[hid]; if (!c) return;
+        var a = (d.points || []).map(function (p) { return p.agent_cpu_pct || 0; });
+        // Align length to system series.
+        while (a.length < c.t.length) a.unshift(0);
+        c.acpu = a.slice(-c.t.length);
+      }).catch(function () {});
+  }
+
+  var resById = {}, selfById = {};
+  function render() {
+    var grid = $("resGrid"), empty = $("resEmpty");
+    var ids = Object.keys(resById);
+    $("resCount").textContent = ids.length + (ids.length === 1 ? " endpoint" : " endpoints");
+    // Drop the initial skeleton placeholders once we have real data.
+    grid.querySelectorAll(".skeleton").forEach(function (s) { s.remove(); });
+    if (!ids.length) { grid.innerHTML = ""; empty.hidden = false; return; }
+    empty.hidden = true;
+    ids.forEach(function (id) {
+      var h = resById[id], self = selfById[id];
+      var card = grid.querySelector('.res-card[data-host="' + id + '"]');
+      if (!card) {
+        grid.insertAdjacentHTML("beforeend", cardHtml(h, self));
+        card = grid.querySelector('.res-card[data-host="' + id + '"]');
+        loadHistory(id).then(function () { return loadAgentHistory(id); }).then(function () { drawSpark(card, id); });
+      } else {
+        // Update live values without full re-render (keeps gauge animation).
+        card.classList.toggle("stale", ageSecs(h.sampled_at_utc) > 90);
+        updateGauges(card, h, self);
+        refreshBars(card, h, self);
+        var ls = card.querySelector(".card-body > .text-muted.small"); if (ls) ls.textContent = "Last sample: " + hhmmss(h.sampled_at_utc);
+      }
+    });
+    // Remove cards for hosts no longer present.
+    grid.querySelectorAll(".res-card").forEach(function (card) {
+      if (!resById[card.dataset.host]) card.remove();
+    });
+  }
+
+  function refreshBars(card, h, self) {
+    var memPct = h.mem_total_mb && self && self.agent_mem_mb ? self.agent_mem_mb / h.mem_total_mb * 100 : 0;
+    var sharePct = (self && self.agent_cpu_pct != null && h.cpu_pct) ? Math.min(100, self.agent_cpu_pct / Math.max(h.cpu_pct, 0.1) * 100) : 0;
+    var fills = card.querySelectorAll(".metric-fill");
+    var pcts = [memPct, sharePct, h.swap_pct || 0];
+    fills.forEach(function (f, i) { var p = Math.max(0, Math.min(100, pcts[i])); f.style.width = p + "%"; f.className = "metric-fill " + fillCls(p); });
+    var vals = card.querySelectorAll(".metric-row .m-val");
+    if (vals[0]) vals[0].textContent = self ? fmtMB(self.agent_mem_mb) : "—";
+    if (vals[1]) vals[1].textContent = num(sharePct, 1) + "% of host";
+    if (vals[2]) vals[2].textContent = num(h.swap_pct, 0) + "%";
+    var rs = card.querySelectorAll(".res-stat .rs-v");
+    if (self && rs.length >= 6) {
+      rs[0].textContent = self.agent_threads == null ? "—" : self.agent_threads;
+      rs[1].textContent = self.agent_fds == null ? "—" : self.agent_fds;
+      rs[2].textContent = self.collection_duration_ms == null ? "—" : num(self.collection_duration_ms) + " ms";
+      rs[3].textContent = self.payload_size_bytes == null ? "—" : fmtBytes(self.payload_size_bytes);
+      rs[4].textContent = self.spool_count == null ? "—" : self.spool_count;
+      rs[5].textContent = self.telemetry_mode || "—";
     }
+  }
 
-    function pctColor(pct) {
-        if (pct == null) return "#6c757d";
-        if (pct >= 90) return "#dc3545";
-        if (pct >= 75) return "#fd7e14";
-        if (pct >= 50) return "#ffc107";
-        return "#198754";
-    }
+  function setLive(ok) {
+    var dot = $("streamDot"), lbl = $("streamLabel");
+    if (dot) { dot.classList.toggle("is-live", ok); dot.classList.toggle("is-stale", !ok); }
+    if (lbl) lbl.textContent = ok ? "live · updating" : "reconnecting…";
+  }
 
-    function gaugeHtml(label, value, unit, color, stale, meta) {
-        var pct = (value != null && value !== "" && !isNaN(value)) ? Number(value) : null;
-        var deg = pct != null ? Math.min(100, Math.max(0, pct)) * 3.6 : 0;
-        var metaHtml = meta ? '<div class="gauge-meta small text-muted">' + esc(meta) + "</div>" : "";
-        return '<div class="gauge-wrap' + (stale ? " stale" : "") + '" style="--val:' + deg + 'deg;--c:' + color + '">' +
-            '<div class="gauge-ring"><div class="gauge-center">' +
-            (pct != null ? '<span class="gauge-value fw-bold">' + esc(pct.toFixed(pct % 1 === 0 ? 0 : 1)) + '</span>' : '<span class="text-muted">—</span>') +
-            '<span class="gauge-unit small">' + esc(unit || "") + '</span></div></div>' +
-            '<div class="gauge-label small text-muted mt-1">' + esc(label) + '</div>' + metaHtml + '</div>';
-    }
-
-    function hostMatchesFilters(h) {
-        var pf = document.getElementById("filterPlatform").value;
-        var df = document.getElementById("filterDevice").value;
-        var tf = document.getElementById("filterTier").value;
-        var hf = (document.getElementById("filterHost").value || "").toLowerCase();
-        if (pf && h.os_type !== pf) return false;
-        if (df) {
-            var dtype = inferDeviceType(h);
-            if (dtype !== df) return false;
+  function tick() {
+    Promise.all([
+      fetch("/api/v1/resources/latest", { cache: "no-store" }).then(function (r) { return r.json(); }),
+      fetch("/api/v1/agent-self/latest", { cache: "no-store" }).then(function (r) { return r.json(); }),
+      fetch("/api/v1/stats/footprint", { cache: "no-store" }).then(function (r) { return r.json(); }),
+    ]).then(function (res) {
+      errors = 0; setLive(true);
+      resById = {}; (res[0].hosts || []).forEach(function (h) { if (h.sampled_at_utc) resById[h.id] = h; });
+      selfById = {}; (res[1].hosts || []).forEach(function (h) { selfById[h.id] = h; });
+      setKpis(res[2]);
+      render();
+      // Refresh sparkline data periodically.
+      Object.keys(resById).forEach(function (id) {
+        var card = $("resGrid").querySelector('.res-card[data-host="' + id + '"]');
+        if (card && histCache[id]) {
+          var c = histCache[id], h = resById[id], self = selfById[id];
+          c.t.push(hhmmss(h.sampled_at_utc).slice(0, 8)); c.cpu.push(h.cpu_pct || 0);
+          c.mem.push(h.mem_pct || 0); c.acpu.push(self ? (self.agent_cpu_pct || 0) : 0);
+          [c.t, c.cpu, c.mem, c.acpu].forEach(function (a) { while (a.length > 60) a.shift(); });
+          drawSpark(card, id);
         }
-        if (tf && h.hw_tier !== tf) return false;
-        if (hf && (h.hostname || "").toLowerCase().indexOf(hf) === -1) return false;
-        return true;
-    }
+      });
+    }).catch(function () { if (++errors >= 3) setLive(false); });
+  }
 
-    function inferDeviceType(h) {
-        if (h.os_type === "docker_host") return "docker";
-        if (h.battery_pct != null && h.battery_pct !== "") return "laptop";
-        if (h.os_type === "linux") return "server";
-        return "desktop";
-    }
-
-    function isStale(h) {
-        if (!h || !h.sampled_at_utc) return true;
-        var t = Date.parse(h.sampled_at_utc);
-        if (isNaN(t)) return true;
-        return (Date.now() - t) > 90000;   // > 6 missed 15s samples
-    }
-
-    function renderGauges(hosts) {
-        var grid = document.getElementById("gaugeGrid");
-        var empty = document.getElementById("emptyState");
-        var visible = hosts.filter(hostMatchesFilters);
-        if (visible.length === 0) {
-            grid.innerHTML = "";
-            empty.style.display = "block";
-            return;
-        }
-        empty.style.display = "none";
-        var html = "";
-        visible.forEach(function (h) {
-            var cpuCol = pctColor(h.cpu_pct);
-            var memCol = pctColor(h.mem_pct);
-            var gpuCol = pctColor(h.gpu_util_pct);
-            var stale = isStale(h);
-            var deviceType = inferDeviceType(h);
-            var deviceIcon = h.os_type === "docker_host" ? "server"
-                : h.battery_pct != null && h.battery_pct !== "" ? "battery" : (h.os_type === "linux" ? "server" : "pc");
-            var meta = "Tier: " + esc(h.hw_tier || "—") + " · " + esc(deviceType) + " · " + esc(h.os_type);
-            var cpuHtml = gaugeHtml("CPU", h.cpu_pct, "%", cpuCol, stale, meta);
-            var memHtml = gaugeHtml("MEM", h.mem_pct, "%", pctColor(h.mem_pct), stale, humanBytes(h.mem_used_mb) + " / " + humanBytes(h.mem_total_mb));
-            var netHtml = gaugeHtml("NET ↓", h.net_recv_kbps, "KB/s", "#0d6efd", stale, humanKbps(h.net_sent_kbps) + " ↑");
-            var gpuHtml = "";
-            if (h.gpu_present) {
-                gpuHtml = gaugeHtml("GPU", h.gpu_util_pct, "%", gpuCol, stale, humanBytes(h.gpu_mem_used_mb));
-            }
-            var battHtml = "";
-            if (h.battery_pct != null && h.battery_pct !== "") {
-                var bc = h.battery_plugged ? "#0d6efd" : pctColor(h.battery_pct);
-                var battIcon = h.battery_plugged ? "⚡" : "🔋";
-                battHtml = gaugeHtml("BATT", h.battery_pct, "% " + battIcon, bc, stale);
-            }
-            var anomalyBadge = h.anomaly ? '<span class="badge bg-danger ms-1">ANOMALY</span>' : "";
-            html += '<div class="col-12 col-md-6 col-lg-4 col-xl-3">' +
-                '<div class="card h-100 gauge-card' + (selectedHosts.has(h.id) ? " border-primary" : "") + '" data-host-id="' + h.id + '" title="Click to add/remove from trend chart">' +
-                '<div class="card-header d-flex justify-content-between align-items-center py-2">' +
-                '<h6 class="mb-0"><span class="pulse-dot' + (h.stale ? " is-stale" : " is-live") + '"></span> ' +
-                esc(h.hostname) + anomalyBadge + '</h6>' +
-                '<small class="text-muted">' + esc(inferDeviceType(h)) + ' · ' + esc(h.os_type) + '</small>' +
-                '</div>' +
-                '<div class="card-body p-2">' +
-                '<div class="row g-2">' +
-                '<div class="col-6">' + cpuHtml + '</div>' +
-                '<div class="col-6">' + memHtml + '</div>' +
-                '<div class="col-6">' + netHtml + '</div>' +
-                '<div class="col-6">' + (gpuHtml || '<div class="gauge-wrap text-muted small">GPU N/A</div>') + '</div>' +
-                '<div class="col-6">' + (battHtml || '<div class="gauge-wrap text-muted small">BATT N/A</div>') + '</div>' +
-                '<div class="col-6"><div class="text-muted small">Tier: ' + esc(h.hw_tier) + '</div></div>' +
-                '<div class="col-6"><div class="text-muted small">Cores: ' + esc(h.cpu_cores) + '</div></div>' +
-                '</div>' +
-                '</div>' +
-                '</div>' +
-                '</div>';
-        });
-        var gridEl = document.getElementById("gaugeGrid");
-        gridEl.innerHTML = html;
-        // attach click to select for trend overlay
-        gridEl.querySelectorAll(".gauge-card").forEach(function (el) {
-            el.addEventListener("click", function () {
-                var hid = parseInt(this.dataset.hostId, 10);
-                if (selectedHosts.has(hid)) selectedHosts.delete(hid);
-                else selectedHosts.add(hid);
-                this.classList.toggle("border-primary", selectedHosts.has(hid));
-                fetchTrends();
-            });
-        });
-    }
-
-    function fetchTrends() {
-        if (!selectedHosts.size || !window.Chart) {
-            if (trendChart) { trendChart.data.datasets = []; trendChart.update(); }
-            return;
-        }
-        var metric = currentMetric;
-        var mins = currentWindow;
-        var promises = Array.from(selectedHosts).map(function (hid) {
-            return fetch("/api/v1/resources/history?host_id=" + hid + "&minutes=" + mins + "&metrics=" + metric + "&limit=300")
-                .then(function (r) { return r.json(); })
-                .then(function (d) { return {host_id: hid, points: d.points || []}; });
-        });
-        Promise.all(promises).then(function (results) {
-            var colors = ["#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c"];
-            var datasets = results.map(function (r, i) {
-                var color = colors[i % colors.length];
-                var data = r.points
-                    .map(function (p) { return {x: Date.parse(p.sampled_at_utc), y: p[metric]}; })
-                    .filter(function (p) { return p.y != null && !isNaN(p.x); });
-                var cached = hostsCache[r.host_id] || {};
-                return {
-                    label: cached.hostname || ("Host " + r.host_id),
-                    data: data,
-                    borderColor: color,
-                    backgroundColor: color + "33",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.3,
-                    fill: false,
-                };
-            });
-            if (trendChart) {
-                trendChart.data.datasets = datasets;
-                trendChart.update();
-            } else {
-                var ctx = document.getElementById("trendChart").getContext("2d");
-                trendChart = new Chart(ctx, {
-                    type: "line",
-                    data: {datasets: datasets},
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: {mode: "nearest", axis: "x", intersect: false},
-                        parsing: false,
-                        normalized: true,
-                        scales: {
-                            x: {
-                                type: "linear",
-                                grid: {display: false},
-                                ticks: {
-                                    maxTicksLimit: 8,
-                                    callback: function (v) {
-                                        var d = new Date(v);
-                                        return isNaN(d) ? "" :
-                                            ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
-                                    }
-                                }
-                            },
-                            y: {beginAtZero: true, grid: {color: "rgba(233,236,239,.5)"}},
-                        },
-                        plugins: {legend: {position: "bottom", labels: {font: {size: 10}}, boxWidth: 12}},
-                        animation: {duration: 250},
-                    }
-                });
-            }
-        });
-    }
-
-    function renderAlerts(alerts) {
-        var list = document.getElementById("alertList");
-        var badge = document.getElementById("alertCount");
-        if (!alerts.length) {
-            list.innerHTML = '<li class="list-group-item text-center text-muted small py-4" id="noAlerts">No recent alerts</li>';
-            badge.textContent = "0";
-            return;
-        }
-        badge.textContent = alerts.length;
-        list.innerHTML = alerts.map(function (a) {
-            var sevCls = "sev-" + (a.severity || "info");
-            var time = (a.ts_utc || "").replace("T", " ").slice(0, 19);
-            return '<li class="list-group-item ' + sevCls + '">' +
-                '<div class="d-flex justify-content-between"><strong>' + esc(a.hostname) + '</strong><small class="text-muted">' + esc(time) + '</small></div>' +
-                '<div class="small text-muted">' + esc(a.message) + '</div>' +
-                '</li>';
-        }).join("");
-    }
-
-    function applyFilters() {
-        renderGauges(Object.values(hostsCache));
-    }
-
-    function prependSamples(samples) {
-        samples.forEach(function (s) {
-            var hid = s.host_id || s.id;   // stream rows carry row-id + host_id; latest rows carry host id
-            if (!hostsCache[hid]) hostsCache[hid] = {};
-            var h = hostsCache[hid];
-            Object.keys(s).forEach(function (k) { if (k !== "id") h[k] = s[k]; });
-            h.id = hid;
-        });
-        applyFilters();
-        if (selectedHosts.size) fetchTrends();
-    }
-
-    function prependAlerts(alerts) {
-        var list = document.getElementById("alertList");
-        var badge = document.getElementById("alertCount");
-        var noAlerts = document.getElementById("noAlerts");
-        if (noAlerts) noAlerts.remove();
-        var optAlerts = document.getElementById("optAlerts");
-        var toastsEnabled = !optAlerts || optAlerts.checked;
-        alerts.forEach(function (a) {
-            var sevCls = "sev-" + (a.severity || "info");
-            var time = (a.ts_utc || "").replace("T", " ").slice(0, 19);
-            var li = document.createElement("li");
-            li.className = "list-group-item " + sevCls;
-            li.innerHTML =
-                '<div class="d-flex justify-content-between"><strong>' + esc(a.hostname) + '</strong><small class="text-muted">' + esc(time) + '</small></div>' +
-                '<div class="small text-muted">' + esc(a.message) + '</div>';
-            list.prepend(li);
-            if (toast && toastsEnabled && (a.severity === "critical" || a.severity === "high")) {
-                toast("Resource alert on " + a.hostname + ": " + a.message, "warning", {ttl: alertTtl});
-            }
-        });
-        while (list.children.length > 50) list.lastElementChild.remove();
-        badge.textContent = list.children.length;
-    }
-
-    function setStreamState(live) {
-        if (statusDot) {
-            statusDot.classList.toggle("is-live", live);
-            statusDot.classList.toggle("is-stale", !live);
-            statusDot.title = live ? "Live stream connected" : "Live stream disconnected - polling";
-        }
-        if (streamLabel) streamLabel.textContent = live ? "live" : "polling";
-    }
-
-    function startPolling() {
-        if (pollTimer) return;
-        setStreamState(false);
-        var interval = (window.ATOR && window.ATOR.refreshInterval) || 5000;
-        async function tick() {
-            if (paused) return;
-            try {
-                var resp = await fetch("/api/v1/resources/latest");
-                if (!resp.ok) throw new Error("bad status " + resp.status);
-                var data = await resp.json();
-                data.hosts.forEach(function (h) {
-                    if (!hostsCache[h.id]) hostsCache[h.id] = {};
-                    Object.assign(hostsCache[h.id], h);
-                });
-                applyFilters();
-                errorCount = 0;
-            } catch (err) {
-                errorCount++;
-            }
-        }
-        tick();
-        pollTimer = setInterval(tick, Math.max(3000, interval));
-    }
-
-    function startStream() {
-        if (!window.EventSource || !document.getElementById("gaugeGrid")) {
-            startPolling();
-            return;
-        }
-        var intervalMs = (window.ATOR && window.ATOR.refreshInterval) || 5000;
-        var seconds = Math.max(2, Math.round(intervalMs / 1000));
-        eventSource = new EventSource("/api/v1/stream/resources?interval=" + seconds);
-
-        eventSource.onmessage = function (msg) {
-            errorCount = 0;
-            setStreamState(true);
-            try {
-                var frame = JSON.parse(msg.data);
-                if (frame.samples && frame.samples.length) prependSamples(frame.samples);
-                if (frame.alerts && frame.alerts.length) prependAlerts(frame.alerts);
-            } catch (e) { /* ignore */ }
-        };
-        eventSource.onerror = function () {
-            errorCount++;
-            setStreamState(false);
-            if (errorCount >= 4) {
-                eventSource.close();
-                eventSource = null;
-                startPolling();
-            }
-        };
-    }
-
-    function init() {
-        statusDot = document.getElementById("streamDot");
-        streamLabel = document.getElementById("streamLabel");
-        // filters
-        ["filterPlatform", "filterDevice", "filterTier", "filterHost"].forEach(function (id) {
-            var el = document.getElementById(id);
-            if (el) el.addEventListener("change", applyFilters);
-            if (el && el.tagName === "INPUT") el.addEventListener("input", applyFilters);
-        });
-        // metric chips
-        document.querySelectorAll('input[name="metric"]').forEach(function (el) {
-            el.addEventListener("change", function () {
-                currentMetric = this.value;
-                fetchTrends();
-            });
-        });
-        document.querySelectorAll('input[name="window"]').forEach(function (el) {
-            el.addEventListener("change", function () {
-                currentWindow = parseInt(this.value, 10);
-                fetchTrends();
-            });
-        });
-        document.getElementById("multiHostToggle")?.addEventListener("change", function () {
-            if (!this.checked) selectedHosts.clear();
-            fetchTrends();
-        });
-        document.getElementById("optPauseHidden")?.addEventListener("change", function () {
-            paused = this.checked;
-        });
-        document.getElementById("optAlerts")?.addEventListener("change", function () {
-            alertTtl = this.checked ? 8000 : 0;
-        });
-
-        // initial data load + stream start
-        fetch("/api/v1/resources/latest").then(function (r) { return r.json(); })
-            .then(function (data) {
-                data.hosts.forEach(function (h) { hostsCache[h.id] = h; });
-                applyFilters();
-                if (!selectedHosts.size && data.hosts.length) {
-                    selectedHosts.add(data.hosts[0].id);
-                    fetchTrends();
-                }
-            }).catch(function () {});
-
-        fetch("/api/v1/resources/alerts?limit=30").then(function (r) { return r.json(); })
-            .then(function (d) { renderAlerts(d.alerts || []); });
-
-        startStream();
-
-        document.addEventListener("visibilitychange", function () {
-            if (document.hidden && eventSource) { eventSource.close(); eventSource = null; setStreamState(false); }
-            else if (!document.hidden && !eventSource && !pollTimer) { startStream(); }
-        });
-    }
-
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", init);
-    } else {
-        init();
-    }
-
-    window.ATOR = window.ATOR || {};
-    window.ATOR.telemetry = { fetchTrends: fetchTrends, renderGauges: function () { applyFilters(); } };
+  function init() {
+    tick();
+    setInterval(tick, Math.max(4000, (window.ATOR && window.ATOR.refreshInterval) || 5000));
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();

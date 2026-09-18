@@ -42,6 +42,7 @@
         stack.appendChild(el);
 
         var ttl = typeof opts.ttl === "number" ? opts.ttl : (type === "error" ? 6500 : 4200);
+        el.style.setProperty("--toast-ttl", ttl + "ms");
         var timer = setTimeout(dismiss, ttl);
 
         function dismiss() {

@@ -56,7 +56,7 @@
     <div class="card ator-card mb-4"><div class="card-header">Create policy</div><div class="card-body">
       <form method="post" action="/ui/policies" class="row g-2"
             data-ajax data-api="/api/v1/policies"
-            data-on-success="reset" data-success-message="Policy saved">
+            data-on-success="reset" data-success-message="Policy saved - queued scan over recent collections">
         <div class="col-md-5"><input name="name" class="form-control form-control-sm" placeholder="Policy name" required></div>
         <div class="col-md-3">
           <select name="min_severity" class="form-select form-select-sm" aria-label="Minimum severity">
@@ -70,17 +70,85 @@
           </select>
         </div>
         <div class="col-md-2"><button type="submit" class="btn btn-primary btn-sm w-100" data-loading-label="Save">Save</button></div>
-        <div class="col-12"><input name="techniques" class="form-control form-control-sm mono" placeholder="Technique IDs comma-separated e.g. T1059.001,T1053.005 (optional)"></div>
+        <div class="col-md-6">
+          <select name="technique_select" id="policyTechniqueSelect" class="form-select form-select-sm mono" aria-label="MITRE technique picker">
+            <option value="">All techniques (blank)</option>
+            {% for tactic in techniques_by_tactic %}
+              <optgroup label="{{ tactic.name }} ({{ tactic.short }})">
+                {% for tech in tactic.techniques %}
+                  <option value="{{ tech.id }}">{% if tech.is_subtechnique %}&nbsp;&nbsp;{% endif %}{{ tech.id }} &mdash; {{ tech.name }}</option>
+                {% endfor %}
+              </optgroup>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-6">
+          <input name="techniques" id="policyTechniques" class="form-control form-control-sm mono"
+                 list="techniqueOptions" placeholder="or paste Technique IDs comma-separated (optional)">
+          <datalist id="techniqueOptions">
+            {% for tactic in techniques_by_tactic %}
+              {% for tech in tactic.techniques %}
+                <option value="{{ tech.id }}">{{ tech.id }} — {{ tech.name }}</option>
+              {% endfor %}
+            {% endfor %}
+          </datalist>
+        </div>
+        <div class="col-md-3">
+          <select name="action" class="form-select form-select-sm" aria-label="Containment action">
+            <option value="isolate" selected>isolate</option>
+            <option value="collect">collect</option>
+            <option value="quarantine_file">quarantine_file</option>
+          </select>
+        </div>
+        <div class="col-md-3">
+          <div class="input-group input-group-sm">
+            <input type="number" name="cooldown_minutes" class="form-control" value="60" min="0" aria-label="Cooldown minutes">
+            <span class="input-group-text">min cooldown</span>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="policyEnabledSwitch" name="enabled" value="1" checked>
+            <label class="form-check-label small" for="policyEnabledSwitch">Policy enabled at creation</label>
+          </div>
+          <div class="form-text small">
+            {{ technique_choices|length }} ATT&amp;CK techniques loaded{% if not cti_available %} (bundle unavailable - type IDs manually){% endif %}.
+            Saving a policy queues an engine scan over recent collections so matching detections feed the approvals queue immediately.
+          </div>
+        </div>
       </form>
     </div></div>
     <div class="card ator-card"><div class="card-header">Policies</div><div class="card-body p-0">
       <table class="table table-sm mb-0 data ator-table" data-interactive data-interactive-empty="1">
-        <thead><tr><th data-sort>Name</th><th data-sort>Min severity</th><th data-sort>Mode</th><th data-sort>Techniques</th><th data-sort>Enabled</th></tr></thead>
+        <thead><tr><th data-sort>Name</th><th data-sort>Min severity</th><th data-sort>Mode</th><th data-sort>Action</th><th data-sort>Techniques</th><th data-sort>Enabled</th></tr></thead>
         <tbody>
         {% for p in policies %}
-          <tr><td>{{ p.name }}</td><td>{{ p.min_severity }}</td><td>{{ p.mode }}</td>
-              <td class="mono small">{{ p.technique_ids or '-' }}</td><td>{{ 'yes' if p.enabled else 'no' }}</td></tr>
-        {% else %}<tr class="empty-hint-row"><td colspan="5"><div class="empty-hint">No policies defined.</div></td></tr>{% endfor %}
+          <tr data-policy-id="{{ p.id }}">
+            <td>{{ p.name }}</td><td>{{ p.min_severity }}</td><td>{{ p.mode }}</td><td>{{ p.action or 'isolate' }}</td>
+            <td class="mono small">{{ p.technique_ids or '-' }}</td>
+            <td>
+              {% if p.enabled %}<span class="badge bg-success">on</span>{% else %}<span class="badge bg-secondary">off</span>{% endif %}
+            </td>
+            <td class="text-nowrap">
+              <form method="post" action="/ui/policies/{{ p.id }}/toggle"
+                    data-ajax data-api="/api/v1/policies/{{ p.id }}/toggle"
+                    data-success-message="Policy {{ p.name }} {{ 'disabled' if p.enabled else 'enabled' }}"
+                    class="d-inline" onsubmit="return false;">
+                <button type="submit" class="btn btn-sm {{ 'btn-outline-secondary' if p.enabled else 'btn-outline-success' }}"
+                        data-loading-label="...">
+                  {{ 'Disable' if p.enabled else 'Enable' }}
+                </button>
+              </form>
+              <form method="post" action="/ui/policies/{{ p.id }}/delete"
+                    data-ajax data-api="/api/v1/policies/{{ p.id }}/delete"
+                    data-on-success="remove-row"
+                    data-success-message="Policy deleted: {{ p.name }}"
+                    class="d-inline" onsubmit="return false;">
+                <button type="submit" class="btn btn-sm btn-outline-danger" data-loading-label="...">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}<tr class="empty-hint-row"><td colspan="7"><div class="empty-hint">No policies defined.</div></td></tr>{% endfor %}
         </tbody>
       </table>
     </div></div>
@@ -89,7 +157,30 @@
 {% endblock %}
 {% block scripts %}
 <script>
-document.addEventListener("ator:action-success", function () {
+document.addEventListener("ator:action-success", function (ev) {
+    var path = (ev.detail && ev.detail.path) || "";
+    if (/\/api\/v1\/policies\/\d+$/.test(path)) {
+        var tr = ev.target && ev.target.closest ? ev.target.closest("tr[data-policy-id]") : null;
+        if (tr) tr.remove();
+        return;
+    }
+    if (/\/api\/v1\/policies\/\d+\/toggle$/.test(path)) {
+        var form = ev.target && ev.target.closest ? ev.target.closest("form") : null;
+        if (form) {
+            var btn = form.querySelector("button");
+            var badgeCell = form.closest("td") && form.closest("td").previousElementSibling;
+            if (btn) btn.textContent = btn.textContent.trim() === "Disable" ? "Enable" : "Disable";
+            if (badgeCell) {
+                var badge = badgeCell.querySelector(".badge");
+                if (badge) {
+                    var on = badge.textContent.trim() === "on";
+                    badge.className = "badge " + (on ? "bg-secondary" : "bg-success");
+                    badge.textContent = on ? "off" : "on";
+                }
+            }
+        }
+        return;
+    }
     var counter = document.getElementById("pendingCount");
     var body = document.getElementById("pendingBody");
     if (!counter || !body) return;
@@ -99,5 +190,18 @@ document.addEventListener("ator:action-success", function () {
     });
     counter.textContent = String(remaining);
 });
+(function () {
+  var sel = document.getElementById("policyTechniqueSelect");
+  var input = document.getElementById("policyTechniques");
+  if (!sel || !input) return;
+  sel.addEventListener("change", function () {
+    var v = sel.value;
+    if (!v) return;
+    var parts = input.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    if (parts.indexOf(v) === -1) parts.push(v);
+    input.value = parts.join(",");
+    sel.value = "";
+  });
+})();
 </script>
 {% endblock %}

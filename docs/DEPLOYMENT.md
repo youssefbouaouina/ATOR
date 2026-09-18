@@ -28,16 +28,56 @@ Production notes:
 ## Agents
 
 Each endpoint needs only the agent package, Python, and outbound connectivity
-to the server. Two deployment paths:
+to the server.
 
-### Path A — full repo already on the machine (dev / same-box testing)
+### Recommended: approval-based token enrollment (Windows and Linux)
+
+1. On the endpoint (or for it), open `http://SERVER:8000/enroll` and submit a
+   request with the hostname and OS (Windows, Linux, or Docker Host).
+2. An analyst accepts it on `/enrollments`.
+3. The status page (`/enroll/status/<request-token>`) then shows a one-line
+   command for that OS. Run it on the endpoint:
+
+   Windows (cmd or PowerShell, self-elevates):
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing -Uri 'http://SERVER:8000/static/bootstrap_endpoint.ps1' -OutFile ([IO.Path]::GetTempPath() + 'ator_bootstrap.ps1'); & ([IO.Path]::GetTempPath() + 'ator_bootstrap.ps1') -ServerUrl 'http://SERVER:8000' -EnrollmentToken '<token>' -EnablePersistence"
+   ```
+   Linux, including Docker hosts (needs curl or wget and sudo):
+   ```bash
+   (curl -fsSL 'http://SERVER:8000/static/bootstrap_endpoint.sh' || wget -qO- 'http://SERVER:8000/static/bootstrap_endpoint.sh') > /tmp/ator_bootstrap.sh && sudo bash /tmp/ator_bootstrap.sh --server 'http://SERVER:8000' --token '<token>'
+   ```
+
+Both bootstraps follow the same steps: check the server is reachable, install
+Python if needed, download the agent package, create a venv, enroll with the
+token, run one verification collection, and set the agent to start at boot.
+
+| | Windows (`bootstrap_endpoint.ps1`) | Linux (`bootstrap_endpoint.sh`) |
+|---|---|---|
+| Python | installs 3.12 from python.org if no 3.8+ found (ignores the Store stub) | installs via apt / dnf / yum / zypper / apk / pacman (RHEL 8: python3.11 or python39) |
+| Package | `/static/ator-agent-deploy.zip` | `/static/ator-agent-deploy.tar.gz` |
+| Install dir | `C:\ator-agent` (`-InstallDir`) | `/opt/ator-agent` (`--install-dir`) |
+| Persistence | Scheduled Task `ATOR Agent Loop` (SYSTEM) | systemd unit `ator-agent` (falls back to cron `@reboot`); `--no-persistence` to skip |
+| Log | `C:\enroll_debug.log` | `/var/log/ator_enroll.log` |
+
+The server builds both packages from the current `agent/` source (plus
+`rules/malware` for local YARA) on each request, so endpoints never receive a
+stale agent. `config.json` is never shipped. Re-running a bootstrap upgrades the
+agent in place and keeps the existing credentials: if the token was already
+used and the saved credentials still work, the agent reports `already_enrolled`.
+
+Tested: Windows 10 (PowerShell 5.1); Ubuntu 22.04, Debian 12, Rocky Linux 9,
+including a systemd install that runs the continuous loop.
+
+### Manual deployment paths
+
+#### Path A — full repo already on the machine (dev / same-box testing)
 ```powershell
 scripts\bootstrap_agent.ps1 -BaseUrl http://SERVER:8000
 ```
 Linux (bash): `scripts/bootstrap_agent.sh http://SERVER:8000`
 (This installs `agent/requirements.txt` — the agent's own dependency set.)
 
-### Path B — packaged deploy to a remote endpoint (recommended for VMs)
+#### Path B — packaged deploy to a remote endpoint (no approval step)
 On the host:
 ```powershell
 scripts\deploy_agent.ps1 -Mode package          # -> scripts\out\ator-agent-deploy.zip

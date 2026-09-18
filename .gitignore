@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local databases and WAL sidecars
+*.db
+*.db-wal
+*.db-shm
+
+# Runtime artifacts
+spool/
+samples/
+reports_out/
+scripts/out/
+backups/
+*.log
+
+# Agent runtime config may hold API credentials once enrolled
+agent/config.json

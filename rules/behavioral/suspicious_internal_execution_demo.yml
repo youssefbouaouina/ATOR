@@ -1,0 +1,23 @@
+title: Suspected Internal / Intentional Execution (Demo)
+id: 9fe63f8e-2afc-502c-913a-a96b88d66502
+status: test
+description: >
+    Detects the harmless demo marker representing an operator or insider
+    deliberately launching a suspicious payload. Cross-platform.
+x-ator-cause: suspected_internal_or_intentional_execution
+x-ator-investigation-hint: >
+    Root cause may be an authorized operator or a malicious insider. Validate
+    the logged-on user, parent process, shell/command history, the change
+    window, and prior authorization before concluding intent - a legitimate
+    admin action and a hands-on-keyboard intruder look identical here.
+logsource:
+    category: process_creation
+detection:
+    selection:
+        CommandLine|contains: 'ATOR_DEMO_INTERNAL_EXECUTION'
+    condition: selection
+tags:
+    - attack.execution
+    - attack.defense-evasion
+    - attack.t1059
+level: high

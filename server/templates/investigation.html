@@ -1,84 +1,63 @@
 {% extends "base.html" %}
 {% block title %}Investigation{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4>Investigation</h4>
-  <form method="get" class="d-flex gap-2">
-    <select name="host_id" class="form-select form-select-sm">
-      {% for h in hosts %}<option value="{{ h.id }}" {{ 'selected' if h.id == selected }}>{{ h.hostname }} ({{ h.os_type }})</option>{% endfor %}
-    </select>
-    <button class="btn btn-primary btn-sm">Load</button>
-  </form>
-</div>
+<link rel="stylesheet" href="/static/css/investigation.css">
+<div class="investigation-view">
+  <header class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4">
+    <div>
+      <div class="section-label">Host investigation</div>
+      <h1 class="h4 mb-1">{{ selected_host.hostname if selected_host else 'Investigation' }}</h1>
+      <p class="text-muted small mb-0">Review findings first, then explore supporting evidence. Times are shown in the dashboard timezone; evidence remains stored in UTC.</p>
+    </div>
+    <form method="get" class="d-flex flex-wrap align-items-end gap-2">
+      <div>
+        <label for="investigation-host" class="form-label small mb-1">Endpoint</label>
+        <select id="investigation-host" name="host_id" class="form-select form-select-sm" {% if not hosts %}disabled{% endif %}>
+          {% if not selected %}<option value="0" selected>Select an endpoint</option>{% endif %}
+          {% for h in hosts %}<option value="{{ h.id }}" {{ 'selected' if h.id == selected }}>{{ h.hostname }} ({{ h.os_type }})</option>{% endfor %}
+        </select>
+      </div>
+      <button class="btn btn-primary btn-sm" {% if not hosts %}disabled{% endif %}>Load</button>
+    </form>
+  </header>
 
-{% if soc.chain %}
-<div class="card mb-4"><div class="card-header">Attack chain (Source of Compromise)</div><div class="card-body">
-  {% for step in soc.chain %}
-    <span class="chain-step" title="{{ step.display }}: {{ step.techniques | map(attribute='name') | join(', ') }}">
-      {{ step.display }} &middot; {{ step.techniques | length }} tech</span>
-  {% endfor %}
-  {% for t in soc.unplaced %}<span class="chain-step bg-secondary">{{ t.name }}</span>{% endfor %}
-</div></div>
-{% endif %}
+  {% if selected_host %}
+  <div class="row g-3 mb-4" aria-label="Investigation summary">
+    <div class="col-6 col-lg-3"><div class="investigation-metric"><strong>{{ detection_total }}</strong><span>Detection hits · {{ detections|length }} grouped findings</span></div></div>
+    <div class="col-6 col-lg-3"><div class="investigation-metric"><strong>{{ counts.critical + counts.high }}</strong><span>Critical / high severity hits</span></div></div>
+    <div class="col-6 col-lg-3"><div class="investigation-metric"><strong>{{ timeline.total }}</strong><span>Timeline events · {{ timeline.events|length }} loaded</span></div></div>
+    <div class="col-6 col-lg-3"><div class="investigation-metric"><strong>{{ tree.nodes|length }}</strong><span>Processes in latest snapshot</span></div></div>
+  </div>
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+    <p class="small text-muted mb-0">Open a section to focus on one part of the investigation.</p>
+    <button type="button" id="investigation-expand" class="btn btn-outline-secondary btn-sm" aria-controls="investigation-findings investigation-attack investigation-timeline investigation-processes" hidden>Expand all</button>
+  </div>
 
-<div class="row g-4">
-  <div class="col-lg-7">
-    <div class="card ator-card mb-4" data-interactive-empty="1">
-      <div class="card-header">Unified timeline ({{ timeline.total }} events, {{ timeline.skew|length }} skew flags)</div>
-      <div class="card-body p-0 feed-panel">
-        <table class="table table-sm table-striped mb-0 data ator-table" data-interactive data-interactive-empty="1">
-          <thead><tr><th data-sort>Time (UTC)</th><th data-sort>Kind</th><th data-sort>Title</th><th>Detail</th></tr></thead>
-          <tbody>
-          {% for e in timeline.events %}
-            <tr><td class="mono text-nowrap">{{ e.ts or '(no ts)' }}</td>
-                <td><span class="badge bg-dark">{{ e.kind }}</span></td>
-                <td>{{ e.title }}</td><td class="mono text-truncate" style="max-width:260px;" title="{{ e.detail }}">{{ e.detail }}</td></tr>
-          {% else %}
-            <tr class="empty-hint-row"><td colspan="4"><div class="empty-hint">Select a host with data.</div></td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
+  <details class="investigation-section" id="investigation-findings" data-investigation-section open>
+    <summary><span><span class="investigation-number">01</span> Findings</span><span class="investigation-count">{{ detections|length }} grouped</span></summary>
+    <div class="investigation-body">
+      <p class="small text-muted">Highest severity first. Repeated hits are grouped by rule, severity and technique.</p>
+      {% include "investigation_findings.html" %}
     </div>
-    <div class="card">
-      <div class="card-header">Detections for this host</div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0 data">
-          <thead><tr><th>Time</th><th>Rule</th><th>MITRE</th><th>Name</th><th>Sev</th></tr></thead>
-          <tbody>
-          {% for d in detections %}
-            <tr><td class="mono">{{ d.detected_at_utc }}</td><td>{{ d.rule_name[:40] }}</td>
-                <td class="mono">{{ d.technique_id or '-' }}</td><td>{{ d.technique_name or '-' }}</td>
-                <td><span class="badge badge-{{ d.severity }}">{{ d.severity }}</span></td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
+  </details>
+  <details class="investigation-section" id="investigation-attack" data-investigation-section>
+    <summary><span><span class="investigation-number">02</span> ATT&amp;CK context</span><span class="investigation-count">{{ soc.chain|length }} tactics</span></summary>
+    <div class="investigation-body">{% include "investigation_attack.html" %}</div>
+  </details>
+  <details class="investigation-section" id="investigation-timeline" data-investigation-section>
+    <summary><span><span class="investigation-number">03</span> Evidence timeline</span><span class="investigation-count">{{ timeline.events|length }} loaded</span></summary>
+    <div class="investigation-body">{% include "investigation_timeline.html" %}</div>
+  </details>
+  <details class="investigation-section" id="investigation-processes" data-investigation-section>
+    <summary><span><span class="investigation-number">04</span> Process snapshot</span><span class="investigation-count">{{ tree.nodes|length }} processes</span></summary>
+    <div class="investigation-body">{% include "investigation_processes.html" %}</div>
+  </details>
+  {% else %}
+  <div class="card p-4 text-center">
+    <h2 class="h5">{{ 'Select a valid endpoint' if hosts else 'No endpoints available' }}</h2>
+    <p class="text-muted mb-0">{{ 'Choose an endpoint above to review its investigation.' if hosts else 'Enroll an endpoint and collect artifacts to begin an investigation.' }}</p>
   </div>
-  <div class="col-lg-5">
-    <div class="card mb-4">
-      <div class="card-header">Process tree (latest collection {{ tree.collection_id and tree.collection_id[:8] or '' }}...)</div>
-      <div class="card-body p-0" style="max-height:420px; overflow-y:auto;">
-        <table class="table table-sm mb-0 data mono">
-          <tbody>
-          {% set by_parent = {} %}
-          {% for n in tree.nodes %}{% set _ = by_parent.setdefault(n.ppid, []).append(n) %}{% endfor %}
-          {% for n in tree.nodes %}
-            <tr><td>{{ '&nbsp;&nbsp;'*0 }}{{ n.pid }} &larr; {{ n.ppid }} &nbsp; <b>{{ n.name }}</b></td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header">Time skew anomalies</div>
-      <div class="card-body small">
-        {% if timeline.skew %}
-          <ul class="mb-0">{% for s in timeline.skew[:10] %}<li class="mono">{{ s.ref }} - {{ s.skew_days }} days off baseline</li>{% endfor %}</ul>
-        {% else %}<span class="text-muted">None detected.</span>{% endif %}
-      </div>
-    </div>
-  </div>
+  {% endif %}
 </div>
 {% endblock %}
+{% block scripts %}<script src="/static/js/investigation.js" defer></script>{% endblock %}

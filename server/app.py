@@ -18,7 +18,15 @@ app = build()
 
 
 def main():
-    uvicorn.run("server.app:app", host="0.0.0.0", port=8000)
+    # ATOR_DEV_RELOAD=1 restarts the server when code/templates change so the
+    # dashboard never serves stale routes during development.
+    reload_enabled = os.environ.get("ATOR_DEV_RELOAD", "").strip().lower() in ("1", "true", "yes")
+    uvicorn.run(
+        "server.app:app",
+        host=os.environ.get("ATOR_HOST", "0.0.0.0"),
+        port=int(os.environ.get("ATOR_PORT", "8000")),
+        reload=reload_enabled,
+    )
 
 
 if __name__ == "__main__":

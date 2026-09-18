@@ -92,6 +92,14 @@ def test_full_api_flow(client):
 
     client.post("/api/v1/engine/run")
 
+    # First engine run processes the raw artifacts and creates new detections,
+    # then evaluates policies against those new detections - this SHOULD create
+    # approvals for the newly processed findings.
+    approvals = client.get("/api/v1/approvals").json()
+    assert len(approvals) >= 1
+    # scan_history explicitly applies a newly created policy to recent
+    # detections from PREVIOUS runs, capped by ATOR_POLICY_MAX_PER_RUN.
+    client.post("/api/v1/engine/run?scan_history=true")
     approvals = client.get("/api/v1/approvals").json()
     assert len(approvals) >= 1
     approval = approvals[0]
@@ -164,7 +172,71 @@ def test_ioc_watchlist_and_pivot(client):
     assert pivot["known_ioc"] is True
 
 
-def test_exports_generate(client):
+@pytest.mark.parametrize("technique_id, path", [
+    ("T1059", "T1059/"),
+    ("T1059.001", "T1059/001/"),
+    ("T1071.001", "T1071/001/"),
+])
+def test_mitre_link_paths(technique_id, path):
+    from server.engine import reporter
+    markup = reporter._mitre_link(technique_id, None)
+    assert f'href="https://attack.mitre.org/techniques/{path}"' in markup
+    assert f"<u>{technique_id}</u>" in markup
+
+
+@pytest.mark.parametrize("technique_id", [
+    None, "", "T1059.01", "T1059.0001", "T1059/001", "T1059.001/",
+    "T1059\n", " T1059", "t1059", "T１０５９", 1059,
+    'T1059" title="invalid', "<b>invalid & ID</b>",
+])
+def test_mitre_link_invalid_ids_are_plain_text(technique_id):
+    import html
+    from server.engine import reporter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
+    markup = reporter._mitre_link(technique_id, None)
+    assert markup == (html.escape(str(technique_id)) if technique_id else "-")
+    paragraph = Paragraph(markup, getSampleStyleSheet()["BodyText"])
+    assert not any(fragment.link for fragment in paragraph.frags)
+
+
+def test_pdf_mitre_links(seeded_host, tmp_path, monkeypatch):
+    import re
+    from server import db as database
+    from server.engine import reporter
+
+    monkeypatch.setattr(reporter, "REPORTS_DIR", str(tmp_path))
+    conn = database.connect()
+    try:
+        for tid in ("T1059", "T1059.001", '<b>invalid & ID</b>'):
+            cur = conn.execute(
+                "INSERT INTO detections (host_id, rule_type, rule_name, severity, technique_id, "
+                "summary, detected_at_utc) VALUES (?, 'sigma', 'Link regression', 'high', ?, '{}', ?)",
+                (seeded_host["host_id"], tid, "2026-09-17T00:00:00+00:00"),
+            )
+            conn.execute(
+                "INSERT INTO enriched_detections (detection_id, technique_name, tactic) VALUES (?, ?, ?)",
+                (cur.lastrowid, "Link regression", json.dumps([{"short": "execution", "name": "Execution"}])),
+            )
+        conn.commit()
+        path = tmp_path / "links.pdf"
+        reporter.generate_pdf(conn, seeded_host["host_id"], str(path))
+        pdf = path.read_bytes()
+        uris = re.findall(rb"/URI\s*\(([^)]*)\)", pdf)
+        assert sorted(uris) == sorted([
+            b"https://attack.mitre.org/techniques/T1059/",
+            b"https://attack.mitre.org/techniques/T1059/",
+            b"https://attack.mitre.org/techniques/T1059/001/",
+            b"https://attack.mitre.org/techniques/T1059/001/",
+        ])
+        assert b"/S /GoTo" in pdf or b"/Dest" in pdf
+    finally:
+        conn.close()
+
+
+def test_exports_generate(client, tmp_path, monkeypatch):
+    from server.engine import reporter
+    monkeypatch.setattr(reporter, "REPORTS_DIR", str(tmp_path))
     enrolled = _enroll(client, hostname="export-host")
     artifacts = {
         "processes": [{"pid": 7, "ppid": 1, "name": "powershell.exe",

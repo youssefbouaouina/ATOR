@@ -1,31 +1,240 @@
 {% extends "base.html" %}
 {% block title %}Reports{% endblock %}
 {% block content %}
-<h4>Investigation Reports</h4>
-<p class="text-muted small">PDF reports include verdict-first summary, risk level, SoC attack chain, color-coded ATT&amp;CK matrix and evidence manifest integrity annex.</p>
-<table class="table table-hover data ator-table bg-white">
-  <thead><tr><th>Host</th><th>OS</th><th>Detections</th><th>PDF Report</th><th>JSON</th><th>STIX 2.1</th></tr></thead>
-  <tbody>
-  {% for h in hosts %}
-    <tr>
-      <td><b>{{ h.hostname }}</b></td><td><span class="badge bg-dark">{{ h.os_type }}</span></td>
-      <td>{{ h.detection_count }}</td>
-      <td><a class="btn btn-outline-primary btn-sm" href="/api/v1/export/report/{{ h.id }}.pdf">Download PDF</a></td>
-      <td><a class="btn btn-outline-secondary btn-sm" href="/api/v1/export/report/{{ h.id }}.json">JSON</a></td>
-      <td><a class="btn btn-outline-secondary btn-sm" href="/api/v1/export/stix/{{ h.id }}.json">STIX</a></td>
-    </tr>
-  {% else %}
-    <tr><td colspan="6" class="text-center text-muted py-4">No hosts enrolled yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-<div class="card ator-card mt-3 anim-rise">
-  <div class="card-header">Fleet-wide exports</div>
-  <div class="card-body d-flex gap-2">
-    <a class="btn btn-success" href="/api/v1/export/navigator.json">ATT&amp;CK Navigator layer (detection coverage)</a>
-    <a class="btn btn-outline-dark" href="https://mitre-attack.github.io/attack-navigator/" target="_blank">Open ATT&amp;CK Navigator &nearr;</a>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <div class="section-label">Evidence &amp; reporting</div>
+    <h4 class="mb-0">Investigation Reports</h4>
+  </div>
+  <a class="btn btn-outline-dark btn-sm" href="https://mitre-attack.github.io/attack-navigator/" target="_blank" rel="noopener">Open ATT&amp;CK Navigator &nearr;</a>
+</div>
+<p class="text-muted small mb-3">PDF reports lead with a verdict-first summary, risk level, the SoC attack chain, a
+  colour-coded ATT&amp;CK matrix, a <b>root-cause / where / when</b> breakdown of every detection, and an evidence-manifest
+  integrity annex. Every generated report is kept below as a filterable, downloadable history per endpoint.</p>
+
+<div class="card ator-card mb-4 anim-rise">
+  <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+    <span>Generate a report</span>
+    <span class="text-muted small">{{ hosts|length }} endpoint{{ '' if hosts|length == 1 else 's' }}</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-5">
+        <label class="form-label small mb-1" for="genHost">Endpoint</label>
+        <select id="genHost" class="form-select form-select-sm">
+          {% for h in hosts %}
+            <option value="{{ h.id }}" data-os="{{ h.os_type }}">{{ h.hostname }} &middot; {{ h.os_type }} &middot; {{ h.detection_count }} detections</option>
+          {% else %}
+            <option value="">No endpoints enrolled</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-7">
+        <label class="form-label small mb-1">Create &amp; archive</label>
+        <div class="btn-toolbar gap-2">
+          <button class="btn btn-primary btn-sm btn-elevate" data-generate="pdf" data-loading-label="Generating">Generate PDF</button>
+          <button class="btn btn-outline-secondary btn-sm" data-generate="json" data-loading-label="...">JSON</button>
+          <button class="btn btn-outline-secondary btn-sm" data-generate="stix" data-loading-label="...">STIX 2.1</button>
+          <a class="btn btn-outline-dark btn-sm ms-auto" href="/api/v1/export/navigator.json">ATT&amp;CK Navigator layer</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card ator-card anim-rise">
+  <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+    <span>Report history</span>
+    <span class="chip-count" id="histCount">0 reports</span>
+  </div>
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label class="filter-label" for="fHost">Endpoint</label>
+      <select id="fHost" class="filter-input">
+        <option value="">All endpoints</option>
+        {% for h in hosts %}<option value="{{ h.id }}">{{ h.hostname }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Kind</label>
+      <div class="segmented" id="fKind">
+        <button class="seg active" data-kind="">All</button>
+        <button class="seg" data-kind="pdf">PDF</button>
+        <button class="seg" data-kind="json">JSON</button>
+        <button class="seg" data-kind="stix">STIX</button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fYear">Year</label>
+      <select id="fYear" class="filter-input"><option value="">Any</option></select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fMonth">Month</label>
+      <select id="fMonth" class="filter-input">
+        <option value="">Any</option>
+        <option value="1">Jan</option><option value="2">Feb</option><option value="3">Mar</option>
+        <option value="4">Apr</option><option value="5">May</option><option value="6">Jun</option>
+        <option value="7">Jul</option><option value="8">Aug</option><option value="9">Sep</option>
+        <option value="10">Oct</option><option value="11">Nov</option><option value="12">Dec</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fDay">Day</label>
+      <select id="fDay" class="filter-input"><option value="">Any</option></select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fFrom">From</label>
+      <input type="date" id="fFrom" class="filter-input">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fTo">To</label>
+      <input type="date" id="fTo" class="filter-input">
+    </div>
+    <button class="btn btn-outline-secondary btn-sm ms-auto" id="fClear">Clear</button>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 data ator-table align-middle">
+        <thead><tr>
+          <th>When (UTC)</th><th>Endpoint</th><th>OS</th><th>Kind</th>
+          <th>Detections (C/H/M/L)</th><th>Risk</th><th>Size</th><th></th>
+        </tr></thead>
+        <tbody id="histBody">
+          <tr class="empty-hint-row"><td colspan="8"><div class="empty-hint">Loading report history&hellip;</div></td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 {% endblock %}
 
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var toast = (window.ATOR && window.ATOR.toast) || function () {};
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { host: "", kind: "", year: "", month: "", day: "", from: "", to: "" };
 
+  function sevCell(r) {
+    var parts = [["critical", r.critical], ["high", r.high], ["medium", r.medium], ["low", r.low]];
+    return parts.map(function (p) {
+      return '<span class="sev-chip badge-' + p[0] + '" title="' + p[0] + '">' + (p[1] || 0) + '</span>';
+    }).join("");
+  }
+  function fmtSize(n) {
+    if (!n) return "-";
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+  function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+
+  function render(rows) {
+    var body = $("histBody");
+    $("histCount").textContent = rows.length + (rows.length === 1 ? " report" : " reports");
+    if (!rows.length) {
+      body.innerHTML = '<tr class="empty-hint-row"><td colspan="8"><div class="empty-hint">No reports match these filters. Generate one above.</div></td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(function (r) {
+      var when = String(r.generated_at_utc || "").replace("T", " ").slice(0, 19);
+      var dl = r.available
+        ? '<a class="btn btn-sm btn-outline-primary btn-elevate" href="/api/v1/reports/' + r.id + '/download">Download</a>'
+        : '<span class="badge bg-secondary" title="File was removed from disk">expired</span>';
+      var risk = r.risk_level ? '<span class="risk-tag risk-' + esc(String(r.risk_level).toLowerCase()) + '">' + esc(r.risk_level) + '</span>' : "-";
+      return '<tr class="anim-fade">' +
+        '<td class="mono small">' + esc(when) + '</td>' +
+        '<td>' + esc(r.hostname) + '</td>' +
+        '<td><span class="badge bg-dark">' + esc(r.os_type) + '</span></td>' +
+        '<td><span class="kind-tag kind-' + esc(r.kind) + '">' + esc(String(r.kind).toUpperCase()) + '</span></td>' +
+        '<td class="sev-chips">' + sevCell(r) + '</td>' +
+        '<td>' + risk + '</td>' +
+        '<td class="mono small">' + fmtSize(r.size_bytes) + '</td>' +
+        '<td class="text-end">' + dl + '</td>' +
+      '</tr>';
+    }).join("");
+  }
+
+  function qs() {
+    var p = new URLSearchParams();
+    Object.keys(state).forEach(function (k) {
+      if (state[k] !== "" && state[k] != null) {
+        p.set(k === "from" ? "date_from" : k === "to" ? "date_to" : k === "host" ? "host_id" : k, state[k]);
+      }
+    });
+    return p.toString();
+  }
+
+  var load = function () {
+    fetch("/api/v1/reports?" + qs()).then(function (r) { return r.json(); })
+      .then(render)
+      .catch(function () { toast("Could not load report history", "error"); });
+  };
+
+  function loadFacets() {
+    fetch("/api/v1/reports/facets" + (state.host ? "?host_id=" + state.host : ""))
+      .then(function (r) { return r.json(); })
+      .then(function (f) {
+        var sel = $("fYear"); var cur = sel.value;
+        sel.innerHTML = '<option value="">Any</option>' + (f.years || []).map(function (y) {
+          return '<option value="' + y + '">' + y + '</option>';
+        }).join("");
+        sel.value = cur;
+      }).catch(function () {});
+  }
+
+  // Populate day dropdown 1..31.
+  (function () {
+    var d = $("fDay"); var out = ['<option value="">Any</option>'];
+    for (var i = 1; i <= 31; i++) out.push('<option value="' + i + '">' + i + '</option>');
+    d.innerHTML = out.join("");
+  })();
+
+  $("fHost").addEventListener("change", function () { state.host = this.value; loadFacets(); load(); });
+  ["fYear", "fMonth", "fDay"].forEach(function (id) {
+    $(id).addEventListener("change", function () {
+      state[id.slice(1).toLowerCase()] = this.value; load();
+    });
+  });
+  $("fFrom").addEventListener("change", function () { state.from = this.value; load(); });
+  $("fTo").addEventListener("change", function () { state.to = this.value; load(); });
+  $("fKind").addEventListener("click", function (e) {
+    var b = e.target.closest(".seg"); if (!b) return;
+    this.querySelectorAll(".seg").forEach(function (s) { s.classList.remove("active"); });
+    b.classList.add("active"); state.kind = b.dataset.kind; load();
+  });
+  $("fClear").addEventListener("click", function () {
+    state = { host: "", kind: "", year: "", month: "", day: "", from: "", to: "" };
+    $("fHost").value = ""; $("fYear").value = ""; $("fMonth").value = ""; $("fDay").value = "";
+    $("fFrom").value = ""; $("fTo").value = "";
+    $("fKind").querySelectorAll(".seg").forEach(function (s, i) { s.classList.toggle("active", i === 0); });
+    loadFacets(); load();
+  });
+
+  document.querySelectorAll("[data-generate]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var host = $("genHost").value;
+      if (!host) { toast("No endpoint selected", "warning"); return; }
+      var kind = btn.dataset.generate;
+      var orig = btn.innerHTML;
+      btn.classList.add("btn-loading"); btn.disabled = true;
+      fetch("/api/v1/hosts/" + host + "/reports?kind=" + kind, { method: "POST" })
+        .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+        .then(function (res) {
+          toast(kind.toUpperCase() + " report generated and archived", "success");
+          if (kind === "pdf" && res.report_id) {
+            window.open("/api/v1/reports/" + res.report_id + "/download", "_blank");
+          }
+          loadFacets(); load();
+        })
+        .catch(function () { toast("Report generation failed", "error"); })
+        .finally(function () { btn.classList.remove("btn-loading"); btn.disabled = false; btn.innerHTML = orig; });
+    });
+  });
+
+  loadFacets();
+  load();
+})();
+</script>
+{% endblock %}

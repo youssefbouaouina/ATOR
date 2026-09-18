@@ -1,0 +1,18 @@
+<p class="small text-muted">Observed tactics in ATT&amp;CK order, not a proven chronological attack path. Expand a tactic to review its techniques.</p>
+<div class="investigation-tactics">
+{% for step in soc.chain %}
+  <details class="investigation-tactic">
+    <summary><strong>{{ step.display }}</strong><span class="small text-muted"> · {{ step.techniques|length }} techniques</span></summary>
+    <div class="mt-3 small">First: <span class="mono"><span data-ator-time="{{ step.first_seen }}">{{ step.first_seen }}</span></span><br>Last: <span class="mono"><span data-ator-time="{{ step.last_seen }}">{{ step.last_seen }}</span></span></div>
+    <ul class="mt-3 mb-0 ps-3">
+      {% for t in step.techniques %}<li class="mb-2"><span class="mono">{{ t.id or 'Unmapped' }}</span> — {{ t.name }} <span class="text-muted">({{ t.hits }} hits)</span></li>{% endfor %}
+    </ul>
+  </details>
+{% else %}<p class="empty-hint">No mapped ATT&amp;CK tactics for this endpoint.</p>{% endfor %}
+</div>
+{% if soc.unplaced %}
+<details class="mt-3">
+  <summary>Findings without tactic placement ({{ soc.unplaced|length }})</summary>
+  <ul class="small mt-2">{% for t in soc.unplaced %}<li>{{ t.name }} · {{ t.technique_id or 'No technique' }} · {{ t.time }} <span class="badge badge-{{ t.severity }}">{{ t.severity }}</span></li>{% endfor %}</ul>
+</details>
+{% endif %}

@@ -1,0 +1,23 @@
+title: Ransomware Encryption Activity (Demo)
+id: 9fe63f8e-2afc-502c-913a-a96b88d66506
+status: test
+description: >
+    Detects the harmless demo marker representing ransomware mass-encrypting
+    files and dropping a ransom note. Cross-platform.
+x-ator-cause: ransomware_file_encryption
+x-ator-investigation-hint: >
+    Root cause is destructive impact via file encryption. Establish patient zero,
+    the encryption binary and its entry vector, the first file touched and the
+    blast radius (paths/shares), and whether shadow copies/backups were deleted.
+    The event time bounds the encryption window for recovery scoping.
+logsource:
+    category: process_creation
+detection:
+    selection:
+        CommandLine|contains: 'ATOR_DEMO_RANSOMWARE_ENCRYPT'
+    condition: selection
+tags:
+    - attack.impact
+    - attack.t1486
+    - attack.t1490
+level: critical

@@ -79,6 +79,50 @@
         chip.textContent = icon + " " + text;
     }
 
+    function initTimezoneDisplay() {
+        var zone = "Africa/Tunis";
+        try {
+            var detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            if (detected && detected !== "UTC" && detected !== "Etc/UTC") zone = detected;
+        } catch (err) {}
+        var zoneLabel = document.getElementById("dashboardTimezone");
+        var formatter = new Intl.DateTimeFormat(undefined, {
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", second: "2-digit",
+            timeZoneName: "short"
+        });
+        var offset = formatter.formatToParts(new Date()).filter(function (part) {
+            return part.type === "timeZoneName";
+        }).map(function (part) { return part.value; })[0] || "local";
+        if (zoneLabel) zoneLabel.textContent = zone + " (" + offset + ")";
+        window.ATOR.timezone = zone;
+    }
+
+    function formatLocalTimestamp(value) {
+        if (!value) return;
+        var normalized = String(value);
+        if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(normalized)) normalized += "Z";
+        var date = new Date(normalized);
+        if (isNaN(date.getTime())) return;
+        var formatted = new Intl.DateTimeFormat(undefined, {
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", second: "2-digit",
+            timeZoneName: "short",
+            timeZone: (window.ATOR && window.ATOR.timezone) || "Africa/Tunis"
+        }).format(date);
+        document.querySelectorAll("[data-ator-time]").forEach(function (el) {
+            if (el.getAttribute("data-ator-time") !== String(value)) return;
+            el.textContent = formatted;
+            el.title = String(value) + " (UTC)";
+        });
+    }
+
+    function formatAllTimestamps() {
+        document.querySelectorAll("[data-ator-time]").forEach(function (el) {
+            formatLocalTimestamp(el.getAttribute("data-ator-time"));
+        });
+    }
+
     function bumpKpis(delta) {
         if (delta <= 0) return;
         var total = document.querySelector('[data-kpi-total]');
@@ -86,6 +130,8 @@
     }
 
     function init() {
+        initTimezoneDisplay();
+        formatAllTimestamps();
         initCounters();
         if (window.ATOR.ajax) window.ATOR.ajax.interceptForms();
         if (window.ATOR.tables) window.ATOR.tables.enhanceAll();
@@ -123,5 +169,8 @@
     }
 
     window.ATOR = window.ATOR || {};
-    window.ATOR.dashboard = { refreshStats: refreshStats };
+    window.ATOR.dashboard = {
+        refreshStats: refreshStats,
+        formatLocalTimestamp: formatLocalTimestamp
+    };
 })();

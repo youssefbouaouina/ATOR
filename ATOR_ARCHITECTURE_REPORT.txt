@@ -1,0 +1,331 @@
+===============================================================================
+ ATOR DFIR — PROJECT ARCHITECTURE & FUNCTIONALITY REPORT
+===============================================================================
+Date: 2026-09-17
+Repository root: C:\Users\SidikRoyale\Documents\projects\ATOR\ator-dfir
+Server endpoint:  http://<host>:8000  (FastAPI/uvicorn, binds 0.0.0.0:8000)
+Live database :  ator_dfir.db (SQLite, WAL mode; location overridable via
+                 ATOR_DFIR_DB environment variable)
+
+ATOR is an open-source Digital Forensics & Incident Response (DFIR) suite.
+It deploys lightweight collection agents to endpoints, ingests forensic
+artifacts with integrity guarantees, runs three complementary detection
+engines (YARA, IOC correlation, Sigma behavior), maps everything onto MITRE
+ATT&CK, reconstructs an attacker timeline / attack chain, and produces
+analyst-facing dashboards plus machine-readable reports (PDF / JSON / STIX 2.1
+/ ATT&CK Navigator layer).
+
+
+===============================================================================
+ 1. HIGH-LEVEL LAYOUT
+===============================================================================
+
+   ator-dfir/
+   |-- agent/                  endpoint collector package (Python, venv-only deps)
+   |   |-- agent.py            main loop: discovery, collect, send, spool/retry
+   |   |-- config.json         collection interval, server URL, telemetry mode
+   |   `-- collectors/         8 collector modules + registry
+   |-- server/                 central FastAPI application
+   |   |-- app.py              uvicorn entrypoint, static mount, UI registration
+   |   |-- api.py              all REST endpoints + ingest/engine pipeline
+   |   |-- db.py               SQLite schema (hosts, raw_*, detections, ...)
+   |   |-- security.py         auth helpers / request signing
+   |   |-- ui.py               server-rendered dashboards (Jinja2 templates)
+   |   |-- engine/              detection + reporting engines
+   |   |-- static/              CSS/JS + packaged agent zip (ator-agent-deploy.zip)
+   |   `-- templates/          HTML pages (overview, investigation, reports, ...)
+   |-- rules/
+   |   |-- behavioral/         Sigma rules (process / network categories)
+   |   `-- malware/            YARA rules (*.yar)
+   |-- scripts/                bootstrap/deploy/test helpers
+   |-- tests/                  pytest suites (agent, api, engine, sigma, ...)
+   |-- docs/                   DEPLOYMENT / METHODOLOGY / VALIDATION / LIMITATIONS
+   |-- samples/                uploaded detection samples
+   `-- reports_out/            generated PDF/JSON/STIX exports
+
+Two runtime personas:
+  * SERVER  — python -m server.app  (Windows: python -m server.app)
+  * AGENT   — python -m agent.agent loop  (or a one-shot "-c" collection)
+
+
+===============================================================================
+ 2. AGENT (ENDPOINT) COMPONENT
+===============================================================================
+
+Entry point: agent/agent.py
+  - load_config(): merges built-in defaults + agent/config.json; env var
+    ATOR_SERVER_URL takes precedence, then config.json, then built-in default.
+  - Server discovery (discover_server_url / ensure_server_url): probes
+    /health on local subnet addresses in parallel (48 workers, 0.5s per IP),
+    persists the working URL back into config.json so the loop stays valid
+    across LAN/VPN/Hyper-V bridge changes.
+  - Loop mode (main -> "loop"): every collection_interval_seconds (default 60):
+      flush_spool() -> run_collection() -> send_payload(); any payload that
+      fails to send is written to a local spool dir and replayed on the next
+      iteration (spool_payload/flush_spool). Network hiccups therefore never
+      lose evidence.
+  - Send payloads to:
+      POST /api/v1/ingest          (artifacts+manifest, chunked JSON)
+      POST /api/v1/ingest/resources (resource/health samples)
+      POST /api/v1/agent-self/ingest (agent self-telemetry)
+  - Enroll (enroll / enroll_with_token): allocates client_id, records the real
+    OS type and a separate docker_engine_flag.
+
+Collector registry — agent/collectors/__init__.py (RFC 3227 volatility order):
+    1. network       psutil net connections: pid, process_name, local/remote
+                     ip:port, proto, status -> raw_connections
+    2. processes     psutil process snapshots: pid, ppid, name, cmdline,
+                     exe_path, sha256, username -> raw_processes
+    3. persistence   Windows registry Run/RunOnce keys, services, scheduled
+                     tasks, startup folders; Linux cron + systemd timers
+                     -> raw_persistence
+    4. logs          Sysmon operational log preferred, else Get-WinEvent
+                     (EventLog API fallback); Linux auth.log/journald
+                     -> raw_logs
+    5. files_triage  watches temp dirs / startup folders / cron.d, hashes every
+                     file (SHA-256), optional LOCAL YARA pre-scan against
+                     <install>/rules/malware/*.yar; upload is metadata-only
+                     (path, hash, size, yara match names) -> raw_files
+    6. containers    docker socket inspection + cgroup/port mapping
+                     -> containers (docker_engine_flag on host)
+    7. resources     CPU/mem/disk/resource alerts -> resource_samples
+    8. agent_self    process/thread/fd counters of the agent itself
+                     -> agent_self_samples
+
+Evidence integrity: every collection produces an EVIDENCE MANIFEST with UTC
+start/end timestamps, hostname, agent version, per-collector artifact counts,
+per-artifact-set SHA-256 and a manifest-level SHA-256. The server verifies and
+stores these; the report annex lists them so tampering after capture is
+detectable. NOTE: as of this report host "tet" holds 434 verified manifests.
+
+Scheduled task (Windows) or systemd unit (Linux) keeps the loop alive across
+reboots; default principal SYSTEM on Windows (see scripts/deploy_agent.ps1 and
+scripts/ator-agent.service).
+
+
+===============================================================================
+ 3. SERVER COMPONENT
+===============================================================================
+
+Framework: FastAPI over uvicorn (server/app.py), Jinja2 templates, SQLite with
+WAL journaling (server/db.py). Request-level DB connections come from
+database.connect dependency.
+
+3.1 Database schema (server/db.py)
+  - hosts, containers                      fleet inventory + docker flag
+  - raw_processes / raw_connections / raw_persistence / raw_logs / raw_files
+  - ioc_store                              analyst watchlist (type, value, source)
+  - detections                             one row per fired rule hit
+  - enriched_detections                    MITRE enrichment (technique/tactic JSON)
+  - policies, approvals_queue              containment playbook + approvals
+  - audit_log                              who-did-what trail
+  - evidence_manifests                     integrity metadata for each collection
+  - kv                                     engine watermark etc.
+  - resource_samples, resource_alerts      resource health pipeline
+  - enrollment_requests, agent_self_samples
+
+3.2 REST API highlights (server/api.py)
+  POST /api/v1/enroll                       agent onboarding
+  POST /api/v1/ingest                       main telemetry ingest (chunked, async
+                                            engine trigger via BackgroundTasks)
+  POST /api/v1/samples                      upload suspect files (server YARA scan)
+  POST /api/v1/engine/run                   manual engine kick
+  GET  /api/v1/hosts  |  /api/v1/detections | /api/v1/timeline | /api/v1/soc/{id}
+  POST /api/v1/policies , POST /api/v1/iocs , GET /api/v1/iocs/search
+  POST /api/v1/approvals/{id}/decide        analyst approve/reject containment
+  GET  /api/v1/export/report/{id}.pdf|.json, /api/v1/export/stix/{id}.json,
+       /api/v1/export/navigator.json
+  GET  /health                             liveness for discovery
+  GET  /api/v1/stats/overview              dashboard aggregate
+  SSE  /api/v1/stream/events, /stream/resources, /stream/agent-self
+       realtime dashboard feeds (Server-Sent Events)
+  GET  /api/v1/resources/latest|history|alerts, /api/v1/agent-self/latest|history
+  POST /api/v1/enroll/request|/enroll      two-phase enrollment flow
+  GET/POST /api/v1/enrollments, accept|reject per token
+  AES-GCM self-checksummed enrollment tokens (see server/security.py)
+
+3.3 Ingest pipeline on POST /api/v1/ingest (api.py ~line 144)
+  Validate bundle -> upsert manifest hash -> insert raw_* rows (batch) ->
+  commit -> schedule engine correlation in BackgroundTasks. Watermarking in
+  kv("engine_last_run_utc") makes repeat loop collections idempotent (the
+  same collection_id is never re-processed).
+
+
+===============================================================================
+ 4. DETECTION ENGINES  (server/engine/)
+===============================================================================
+
+run_engine() (engine/__init__.py) is the orchestrator:
+
+  1. sigma_run       sigma_runner.py  (rule_type = "sigma")
+       - Loads rules/behavioral/*.yml, validates with pySigma, then translates
+         each detection section into a PARAMETERIZED SQL query against the
+         matching raw table (process_creation -> raw_processes,
+         network_connection -> raw_connections).
+       - Supported field modifiers: contains / endswith / startswith / re /
+         base64 / gt/gte/lt/lte / all; conditions handle and/or/not,
+         "1 of X*", "all of them"; wildcards and LIKE escaping included.
+       - Only rows collected after the engine watermark are examined, so
+         already-analyzed collections are skipped (idempotent).
+
+  2. correlate_collection (engine/__init__.py)
+       - For each collection that has NO detections yet (unprocessed), pulls
+         its processes/network/files and runs:
+           ioc_correlator.correlate_batch   (rule_type = "ioc")
+               - matches sha256 hashes and IPs in the raw artifacts against
+                 ioc_store watchlist entries.
+           yara_scanner.correlate_files     (rule_type = "yara")
+               - converts agent-supplied yara_matches (already scanned locally)
+                 into detections.
+
+  3. attack_mapper.enrich_detections (engine/attack_mapper.py)
+       - Joins every detection that carries a technique_id against the official
+         MITRE ATT&CK STIX bundle (downloaded by scripts/update_mitre.py);
+         100% data-driven, no hardcoded mapping. Provides technique name,
+         tactics, platforms, data sources, description.
+
+  4. evaluate_policies (engine/__init__.py)
+       - If a detection meets a policy threshold (severity + optional technique
+         filter) a pending approval is queued in approvals_queue for analyst
+         decision (containment playbook).
+
+Fire order produces rule_type values: "yara", "ioc", "sigma".
+
+
+===============================================================================
+ 5. RULES SHIPPED IN THIS REPO
+===============================================================================
+
+YARA — rules/malware/
+  * generic_triage.yar          triage rule incl. ATOR_DFIR_Eicar_Style_Test_File
+                                marker (demo), generic shellcode/pe heuristics
+  * suspicious_powershell.yar   obfuscation / encoded-command heuristics
+
+Sigma — rules/behavioral/ (10 rules)
+  - certutil_abuse.yml          Certutil download/decode abuse
+  - cron_base64_persistence.yml base64 cron persistence (Linux)
+  - linux_pipe_to_shell.yml     bash -c '/dev/stdin' piping (Linux)
+  - mimikatz_execution.yml      Mimikatz binary/string detection
+  - powershell_download_cradle.yml  IEX/DownloadString/Invoke-WebRequest
+  - powershell_encoded_command.yml  -EncodedCommand usage (T1059.001)
+  - reg_run_persistence.yml     registry Run key persistence (T1547.001)
+  - reverse_shell_ports.yml     C2 ports 4444/5555/1337/9001/31337 (T1071.001)
+  - schtasks_create.yml         scheduled task creation
+  - whoami_discovery.yml        whoami discovery (T1033)
+
+Note: the rules are the LIVE ones deployed to the agent's rules dir
+(C:\ator-agent\rules\malware) as part of the capability demo.
+
+
+===============================================================================
+ 6. SOAR / INVESTIGATION MODULES
+===============================================================================
+
+timeline.build()      (engine/timeline.py)
+  - Blends detections + raw_logs + raw_persistence + evidence_manifests into a
+    unified chronological stream; flags time-skew outliers (>45d) and exposes a
+    process ancestry tree (timeline.process_tree) rooted at a collection.
+
+soc_chain.build()     (engine/soc_chain.py)
+  - Orders detections along the ATT&CK kill chain (initial access ->
+    execution -> .. -> command-and-control -> exfiltration), producing ordered
+    attack-chain steps per host with observed windows and technique hits.
+
+soc_chain.risk_assessment() (engine/soc_chain.py)
+  - Verdict + risk level (CLEAN / LOW / MEDIUM / HIGH / CRITICAL) computed from
+    severity counts and how many distinct attack stages were observed.
+
+reporter.py           (engine/reporter.py)
+  - generate_pdf():  verdict-first executive summary -> detection analytics
+    (severity pie + tactic bars + 24h trend) -> attack chain table -> color-
+    coded ATT&CK matrix (observed tactics highlighted) -> technical annex
+    (key detections, timeline, evidence manifest integrity table).
+  - generate_json(): full structured report payload.
+  - generate_stix(): STIX 2.1 bundle of observed file-hash / C2 indicators.
+  - generate_navigator_layer(): ATT&CK Navigator layer JSON (coverage scoring).
+
+
+===============================================================================
+ 7. WEB DASHBOARDS (server/ui.py + templates)
+===============================================================================
+
+  /                 Overview  — severity counts, hosts, recent detections
+  /investigation    Timeline + process tree + SoC attack chain per host
+  /endpoints        Fleet table (detection counts, enrollment status)
+  /containment      Policy rules + pending/decided approval queue
+  /intel            Threat intel watchlist + hash/IP lookup
+  /reports          Per-host PDF / JSON / STIX / Navigator exports
+  /telemetry        Live agent telemetry table (5s poll, fetch no-store)
+  /enrollments      Two-phase enrollment requests management
+  Realtime: SSE streams (/api/v1/stream/*) drive live charts on the dashboard.
+
+
+===============================================================================
+ 8. CAPABILITY DEMO  (scripts/demo_windows_capabilities.ps1 -> demo_launch.ps1)
+===============================================================================
+
+demo_launch.ps1 (copy shipped at repo root) demonstrates all three detection
+engines on a live Windows endpoint using only the repo's own benign signals:
+
+  1. Deploys project YARA rules to C:\ator-agent\rules\malware so the files
+     triage collector starts using them.
+  2. Drops a benign marker file (ATOR_DFIR_TEST_FILE_MARKER_X7Q9) in SYSTEM-scanned
+     paths (C:\Windows\Temp + ProgramData Startup via UAC elevation, plus user
+     temp / Startup). Rule ATOR_DFIR_Eicar_Style_Test_File flags it -> YARA.
+  3. Registers the marker's SHA-256 as a hash IOC via POST /api/v1/iocs
+     -> IOC correlation (also catches hash of marker).
+  4. Starts a long-lived `powershell -EncodedCommand` (T1059.001) and a real
+     TCP connection to 127.0.0.1:4444 backed by a python listener (T1071.001)
+     so the 60s process/network collectors snapshot them -> Sigma detections.
+
+Rerun with -Cleanup to kill the demo processes, delete markers, and remove the
+demo IOC; the YARA rule files are intentionally left in place (they are what
+enable scanning).
+
+Verified result on this host (tet, windows) — live DB state at writing:
+  detections........ 3,732 total
+     by engine...... yara 1,596 | ioc 2,128 | sigma 8
+  raw_logs.......... 1,559,291 rows (Sysmon operational log primary source)
+  evidence_manifests 434 (all SHA-256 verified at ingestion)
+  ioc_store......... 1 entry (ator-demo hash watchlist)
+  engine watermark.. last run 2026-09-16T23:08:57 UTC (idempotent re-runs)
+  Report verdict.... CRITICAL / CONFIRMED COMPROMISE INDICATORS
+  Attack chain...... execution -> T1059.001 PowerShell x6
+                     command-and-control -> T1071.001 Web Protocols x2
+  Risk counts....... critical 2 | high 349 (rolling; grows with each 60s cycle)
+  PDF/JSON/STIX/Navigator exports all return HTTP 200.
+
+
+===============================================================================
+ 9. VALIDATION / QA
+===============================================================================
+
+tests/ pytest suites: test_agent (collectors, manifest, spool/discovery),
+test_api (all endpoints incl. ingest + engine), test_sigma (rule compilation +
+SQL SQL generation), test_ioc_yara (correlators), test_mapper_timeline (MITRE
+enrich + timeline/chain), test_dashboard_api, test_resources, test_db,
+test_dashboard_api. conftest.py provides in-session DB fixtures.
+
+Known environment note: on this Windows host pytest needs
+`--basetemp=C:\Users\SidikRoyale\AppData\Local\Temp\opencode\pt-...` to avoid
+WinError 5 inside .pytest_cache; agent/resource suites currently pass, API
+suites pass except for the identical basetemp symptom.
+
+see also docs/ DEPLOYMENT.md (install + Sysmon EID table), METHODOLOGY.md
+(RFC 3227 collecting order + detection pipeline), VALIDATION.md (Atomic Red
+Team), LIMITATIONS.md.
+
+
+===============================================================================
+ 10. ONE-LINE SUMMARY OF HOW IT ALL WORKS
+===============================================================================
+
+Agent polls server URL (auto-discovered), snapshots network/processes/
+persistence/logs/files (+ optional local YARA), ships artifact+manifest
+bundles with SHA-256 integrity to POST /api/v1/ingest; the server stores raw
+telemetry, runs Sigma-to-SQL + IOC hash correlation + YARA (agent-side pre-
+scan and uploaded samples), enriches matches with MITRE mapping, builds a
+timeline + kill-chain + risk verdict, flags policy-based containment actions
+for analyst approval, and renders it all through the dashboard with PDF/JSON/
+STIX/Navigator exports for the investigator.
+===============================================================================

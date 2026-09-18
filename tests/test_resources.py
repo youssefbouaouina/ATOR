@@ -372,6 +372,74 @@ def test_retention_prune_via_kv_counter(client):
 
 
 # ---------------------------------------------------------------------------
+# Agent-self (impact) telemetry endpoints
+# ---------------------------------------------------------------------------
+
+def test_agent_self_latest_returns_200_without_data(client):
+    """Regression: agent-self/latest must not 500 when hosts have no samples
+    (the issue was an inner `from datetime import datetime` making `datetime`
+    a function-local name that was unbound in the no-data branch)."""
+    enrolled = _enroll(client)
+    resp = client.get("/api/v1/agent-self/latest")
+    assert resp.status_code == 200
+    data = resp.json()
+    by_id = {h["id"]: h for h in data["hosts"]}
+    assert enrolled["host_id"] in by_id
+    assert by_id[enrolled["host_id"]]["stale"] is True
+
+
+def test_agent_self_ingest_and_latest_roundtrip(client):
+    """Enrolling and posting one agent-self sample is visible in latest."""
+    enrolled = _enroll(client)
+    headers = _auth_headers(enrolled)
+    s = {
+        "sampled_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "agent_cpu_pct": 2.5, "agent_mem_mb": 48.0, "agent_threads": 12,
+        "agent_fds": 90, "agent_cpu_time_user": 0.1, "agent_cpu_time_system": 0.2,
+    }
+    resp = client.post("/api/v1/agent-self/ingest", json={"samples": [s]}, headers=headers)
+    assert resp.status_code == 202
+    assert resp.json()["count"] == 1
+
+    resp = client.get("/api/v1/agent-self/latest")
+    assert resp.status_code == 200
+    me = [h for h in resp.json()["hosts"] if h["id"] == enrolled["host_id"]][0]
+    assert me["agent_cpu_pct"] == 2.5
+    assert me["agent_mem_mb"] == 48.0
+    assert me["agent_threads"] == 12
+    assert me["stale"] is False
+
+
+def test_agent_self_history_returns_points(client):
+    """agent-self history fills in series points after an ingest."""
+    enrolled = _enroll(client)
+    headers = _auth_headers(enrolled)
+    s = {"sampled_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+         "agent_cpu_pct": 3.0, "agent_mem_mb": 60.0, "agent_threads": 8}
+    client.post("/api/v1/agent-self/ingest", json={"samples": [s]}, headers=headers)
+
+    resp = client.get(
+        f"/api/v1/agent-self/history?host_id={enrolled['host_id']}&minutes=30"
+        "&metrics=agent_cpu_pct,agent_mem_mb"
+    )
+    assert resp.status_code == 200
+    pts = resp.json()["points"]
+    assert len(pts) == 1
+    assert pts[0]["agent_cpu_pct"] == 3.0
+
+
+def test_agent_self_history_filters_unknown_metrics(client):
+    """Unknown metrics fall back to the default impact set (not a 500)."""
+    enrolled = _enroll(client)
+    resp = client.get(
+        f"/api/v1/agent-self/history?host_id={enrolled['host_id']}&minutes=30"
+        "&metrics=cpu_pct,not_a_metric,also_invalid"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["points"] == []
+
+
+# ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

@@ -146,6 +146,54 @@
         });
     }
 
+    // Compact multi-series sparkline for the resources page. series: [{label,
+    // data:[], color}]. Reuses one Chart instance per canvas (live updates).
+    function sparkline(canvasId, labels, series) {
+        var el = typeof canvasId === "string" ? document.getElementById(canvasId) : canvasId;
+        if (!el || !window.Chart) return null;
+        var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        var existing = Chart.getChart(el);
+        if (existing) {
+            existing.data.labels = labels;
+            series.forEach(function (s, i) {
+                if (existing.data.datasets[i]) existing.data.datasets[i].data = s.data;
+            });
+            existing.update(reduced ? "none" : undefined);
+            return existing;
+        }
+        var ctx = el.getContext("2d");
+        return new Chart(el, {
+            type: "line",
+            data: {
+                labels: labels,
+                datasets: series.map(function (s) {
+                    var grad = ctx.createLinearGradient(0, 0, 0, 70);
+                    grad.addColorStop(0, s.color + "40");
+                    grad.addColorStop(1, s.color + "05");
+                    return {
+                        label: s.label, data: s.data, borderColor: s.color,
+                        backgroundColor: s.fill === false ? "transparent" : grad,
+                        fill: s.fill !== false, borderWidth: 1.8, tension: 0.4,
+                        pointRadius: 0, pointHoverRadius: 3,
+                    };
+                }),
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                animation: reduced ? false : { duration: 400 },
+                interaction: { intersect: false, mode: "index" },
+                scales: {
+                    y: { beginAtZero: true, suggestedMax: 100, display: false, grid: { display: false } },
+                    x: { display: false, grid: { display: false } },
+                },
+                plugins: { legend: { display: false }, tooltip: {
+                    enabled: true, displayColors: false,
+                    callbacks: { title: function (i) { return i[0] ? i[0].label : ""; },
+                        label: function (c) { return c.dataset.label + ": " + Math.round(c.parsed.y); } } } },
+            },
+        });
+    }
+
     window.ATOR = window.ATOR || {};
-    window.ATOR.charts = { severityDoughnut: severityDoughnut, trendLine: trendLine };
+    window.ATOR.charts = { severityDoughnut: severityDoughnut, trendLine: trendLine, sparkline: sparkline };
 })();

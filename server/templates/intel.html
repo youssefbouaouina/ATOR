@@ -34,7 +34,10 @@
           {% for c in results.connections %}
             <tr><td>{{ c.hostname }}</td><td>{{ c.process_name }}</td><td>{{ c.remote_ip }}:{{ c.remote_port }}</td></tr>
           {% endfor %}
-          {% if not results.processes and not results.connections %}
+          {% for d in results.domains %}
+            <tr><td>{{ d.hostname }}</td><td>{{ d.process_name }}</td><td>{{ d.remote_domain }} ({{ d.remote_ip }}:{{ d.remote_port }})</td></tr>
+          {% endfor %}
+          {% if not results.processes and not results.connections and not results.domains %}
             <tr class="empty-hint-row"><td><div class="empty-hint">No artifacts matched.</div></td></tr>
           {% endif %}
           </tbody>

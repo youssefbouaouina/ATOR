@@ -167,7 +167,9 @@ def _linux():
     cfg = load_config()
     cap = int(cfg.get("max_events_per_source", 300))
     out = []
-    for source_name, path in (("auth", "/var/log/auth.log"), ("syslog", "/var/log/syslog")):
+    # Debian/Ubuntu names first, then RHEL/Fedora/SUSE equivalents.
+    for source_name, path in (("auth", "/var/log/auth.log"), ("syslog", "/var/log/syslog"),
+                              ("auth", "/var/log/secure"), ("syslog", "/var/log/messages")):
         if not os.path.exists(path):
             continue
         try:

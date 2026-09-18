@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import requests as http_requests
@@ -35,6 +36,7 @@ class PolicyRequest(BaseModel):
     technique_ids: list[str] | None = None
     mode: str = "notify"
     action: str = "isolate"
+    cooldown_minutes: int | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -47,6 +49,25 @@ class IocRequest(BaseModel):
     value: str
     threat_source: str = "analyst-watchlist"
     description: str | None = None
+
+
+class HeartbeatRequest(BaseModel):
+    """Agent-reported liveness/state, sent on a short interval."""
+    state: str = Field(default="running", pattern="^(running|paused|stopping)$")
+    agent_version: str | None = None
+    telemetry_mode: str | None = None
+    spool_count: int | None = None
+
+
+class AgentStateRequest(BaseModel):
+    """Analyst-requested agent lifecycle state for an endpoint."""
+    state: str = Field(pattern="^(running|paused)$")
+    requested_by: str = "analyst-ui"
+
+
+class CommandResultRequest(BaseModel):
+    status: str = Field(pattern="^(done|failed)$")
+    detail: dict | None = None
 
 
 class ResourceSampleIn(BaseModel):
@@ -71,6 +92,23 @@ class ResourceSampleIn(BaseModel):
 
 class SamplesRequest(BaseModel):
     samples: list[ResourceSampleIn]
+
+
+class AgentSelfSampleIn(BaseModel):
+    sampled_at_utc: str | None = None
+    agent_cpu_pct: float | None = None
+    agent_mem_mb: float | None = None
+    agent_threads: int | None = None
+    agent_fds: int | None = None
+    agent_cpu_time_user: float | None = None
+    agent_cpu_time_system: float | None = None
+    collection_duration_ms: float | None = None
+    payload_size_bytes: int | None = None
+    spool_count: int | None = None
+
+
+class AgentSelfSamplesRequest(BaseModel):
+    samples: list[AgentSelfSampleIn]
 
 
 app = FastAPI(title="ATOR DFIR Framework", version="1.0.0")
@@ -124,6 +162,67 @@ def enroll(body: EnrollRequest, conn=Depends(get_conn)):
     return {"host_id": cur.lastrowid, "client_id": client_id, "api_key": api_key}
 
 
+# Natural-key columns stored bare in the ux_raw_*_dedupe indexes; every other
+# key column is indexed as COALESCE(col, default) (see server/db.py).
+_DEDUPE_BARE_COLUMNS = {"host_id", "ptype", "path"}
+_DEDUPE_INT_COLUMNS = {"pid", "local_port", "remote_port", "event_id"}
+
+
+def _dedupe_key_term(name):
+    """WHERE term matching the dedupe index expression for ``name``.
+
+    The terms must mirror the index expressions exactly: with plain
+    ``col IS ?`` SQLite can only use the host_id prefix and scans every row of
+    the host for each artifact, holding the write lock for about a minute per
+    ingest on a busy Windows host (other writes then fail with "database is
+    locked").
+    """
+    if name in _DEDUPE_BARE_COLUMNS:
+        return f"{name} IS ?"
+    default = "-1" if name in _DEDUPE_INT_COLUMNS else "''"
+    return f"COALESCE({name},{default}) = COALESCE(?,{default})"
+
+
+def _upsert_observation(conn, table, columns, values, key_columns, received, collection_id):
+    """Insert a new artifact row or refresh the one matching its natural key.
+
+    Agents re-report the same processes/connections/persistence/files every
+    collection cycle, so repeated observations update the existing row
+    (last_seen_utc + observation_count) instead of inserting a duplicate.
+
+    UPDATE-then-INSERT is used deliberately: it behaves correctly whether or not
+    the natural-key unique index exists yet, and the index simply makes the
+    lookup O(log n).
+    """
+    key_values = [values[columns.index(name)] for name in key_columns]
+    where = " AND ".join(_dedupe_key_term(name) for name in key_columns)
+    updated = conn.execute(
+        f"UPDATE {table} SET collection_id=?, collected_at_utc=?, last_seen_utc=?,"
+        f" observation_count=observation_count+1 WHERE {where}",
+        [collection_id, received, received] + key_values,
+    ).rowcount
+    if updated:
+        return False
+    placeholders = ",".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO {table} ({','.join(columns)}, first_seen_utc, last_seen_utc, observation_count)"
+        f" VALUES ({placeholders},?,?,1)",
+        list(values) + [received, received],
+    )
+    return True
+
+
+def _insert_log(conn, row):
+    """Insert a log event once; identical events re-sent by the agent are dropped."""
+    return conn.execute(
+        """INSERT INTO raw_logs (host_id, collection_id, collected_at_utc, source, event_id,
+                                 event_time_utc, provider, computer, payload_json)
+           VALUES (?,?,?,?,?,?,?,?,?)
+           ON CONFLICT DO NOTHING""",
+        row,
+    ).rowcount
+
+
 @app.post("/api/v1/ingest", status_code=202)
 def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth_host)):
     conn = ctx["conn"]
@@ -142,17 +241,21 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
 
     received = manifest.get("finished_at_utc") or datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+    counts = {"inserted": 0, "deduped": 0}
     for item in artifacts.get("processes") or []:
         if not isinstance(item, dict) or "_error" in item:
             continue
-        conn.execute(
-            """INSERT INTO raw_processes (host_id, collection_id, collected_at_utc, pid, ppid,
-                                          name, cmdline, exe_path, sha256, username)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (host["id"], collection_id, received, item.get("pid"), item.get("ppid"),
+        inserted = _upsert_observation(
+            conn, "raw_processes",
+            ["host_id", "collection_id", "collected_at_utc", "pid", "ppid", "name",
+             "cmdline", "exe_path", "sha256", "username"],
+            [host["id"], collection_id, received, item.get("pid"), item.get("ppid"),
              item.get("name"), item.get("cmdline"), item.get("exe_path"),
-             item.get("sha256"), item.get("username")),
+             item.get("sha256"), item.get("username")],
+            ["host_id", "pid", "name", "cmdline", "exe_path", "sha256"],
+            received, collection_id,
         )
+        counts["inserted" if inserted else "deduped"] += 1
     for item in artifacts.get("network") or []:
         if not isinstance(item, dict) or "_error" in item:
             continue
@@ -160,63 +263,65 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
         remote = item.get("remote") or ""
         lip, lport = _split_addr(local)
         rip, rport = _split_addr(remote)
-        conn.execute(
-            """INSERT INTO raw_connections (host_id, collection_id, collected_at_utc, pid,
-                                            process_name, local_ip, local_port, remote_ip,
-                                            remote_port, proto, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (host["id"], collection_id, received, item.get("pid"), item.get("process_name"),
-             lip, lport, rip, rport, item.get("proto"), item.get("status")),
-        )
+        rdomain = item.get("remote_domain")
+        counts["inserted" if _upsert_observation(
+            conn, "raw_connections",
+            ["host_id", "collection_id", "collected_at_utc", "pid", "process_name",
+             "local_ip", "local_port", "remote_ip", "remote_port", "remote_domain", "proto", "status"],
+            [host["id"], collection_id, received, item.get("pid"), item.get("process_name"),
+             lip, lport, rip, rport, rdomain, item.get("proto"), item.get("status")],
+            ["host_id", "pid", "local_ip", "local_port", "remote_ip", "remote_port", "proto"],
+            received, collection_id,
+        ) else "deduped"] += 1
     for item in artifacts.get("persistence") or []:
         if not isinstance(item, dict) or "_error" in item:
             continue
-        conn.execute(
-            """INSERT INTO raw_persistence (host_id, collection_id, collected_at_utc, ptype,
-                                            name, command, location)
-               VALUES (?,?,?,?,?,?,?)""",
-            (host["id"], collection_id, received, item.get("ptype"), item.get("name"),
-             item.get("command"), item.get("location")),
-        )
+        counts["inserted" if _upsert_observation(
+            conn, "raw_persistence",
+            ["host_id", "collection_id", "collected_at_utc", "ptype", "name", "command", "location"],
+            [host["id"], collection_id, received, item.get("ptype"), item.get("name"),
+             item.get("command"), item.get("location")],
+            ["host_id", "ptype", "name", "command", "location"],
+            received, collection_id,
+        ) else "deduped"] += 1
     for item in artifacts.get("logs") or []:
         if not isinstance(item, dict) or "_error" in item:
             continue
         log_payload = item.get("payload_json")
         if not isinstance(log_payload, str):
             log_payload = json.dumps(log_payload or {k: v for k, v in item.items() if k != "payload_json"})
-        conn.execute(
-            """INSERT INTO raw_logs (host_id, collection_id, collected_at_utc, source, event_id,
-                                     event_time_utc, provider, computer, payload_json)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (host["id"], collection_id, received, item.get("source"), item.get("event_id"),
-             item.get("event_time_utc"), item.get("provider"), item.get("computer"),
-             log_payload),
-        )
+        counts["inserted" if _insert_log(conn, (
+            host["id"], collection_id, received, item.get("source"), item.get("event_id"),
+            item.get("event_time_utc"), item.get("provider"), item.get("computer"), log_payload,
+        )) else "deduped"] += 1
     for item in artifacts.get("files_triage") or []:
         if not isinstance(item, dict) or "_error" in item:
             continue
         matches = json.dumps(item.get("yara_matches")) if item.get("yara_matches") else None
-        conn.execute(
-            """INSERT INTO raw_files (host_id, collection_id, collected_at_utc, path, sha256,
-                                      size_bytes, yara_matches)
-               VALUES (?,?,?,?,?,?,?)""",
-            (host["id"], collection_id, received, item.get("path"), item.get("sha256"),
-             item.get("size_bytes"), matches),
-        )
+        counts["inserted" if _upsert_observation(
+            conn, "raw_files",
+            ["host_id", "collection_id", "collected_at_utc", "path", "sha256",
+             "size_bytes", "yara_matches"],
+            [host["id"], collection_id, received, item.get("path"), item.get("sha256"),
+             item.get("size_bytes"), matches],
+            ["host_id", "path", "sha256"],
+            received, collection_id,
+        ) else "deduped"] += 1
     containers_seen = set()
     for item in artifacts.get("containers") or []:
         if not isinstance(item, dict) or "_error" in item:
             continue
         cid = item.get("container_id")
         if item.get("record") == "process_mapping":
-            conn.execute(
-                """INSERT INTO raw_processes (host_id, collection_id, collected_at_utc, pid,
-                                              name, cmdline, exe_path, sha256, username,
-                                              container_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (host["id"], collection_id, received, item.get("pid"),
-                 item.get("process_name"), None, None, None, None, cid),
-            )
+            counts["inserted" if _upsert_observation(
+                conn, "raw_processes",
+                ["host_id", "collection_id", "collected_at_utc", "pid", "name", "cmdline",
+                 "exe_path", "sha256", "username", "container_id"],
+                [host["id"], collection_id, received, item.get("pid"),
+                 item.get("process_name"), None, None, None, None, cid],
+                ["host_id", "pid", "name", "cmdline", "exe_path", "sha256"],
+                received, collection_id,
+            ) else "deduped"] += 1
             continue
         if item.get("record") != "inventory" or not cid or cid in containers_seen:
             continue
@@ -244,16 +349,19 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
          manifest.get("agent_version"), json.dumps(manifest.get("collector_order") or []),
          artifact_count, manifest_json, manifest.get("manifest_sha256", ""), datetime.now(timezone.utc).isoformat(timespec="seconds")),
     )
+    received_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn.execute(
-        "UPDATE hosts SET last_seen_utc=?, agent_version=? WHERE id=?",
-        (datetime.now(timezone.utc).isoformat(timespec="seconds"), manifest.get("agent_version"), host["id"]),
+        """UPDATE hosts SET last_seen_utc=?, agent_version=?, last_heartbeat_utc=? WHERE id=?""",
+        (received_at, manifest.get("agent_version"), received_at, host["id"]),
     )
     database.audit(conn, f"host:{host['hostname']}", "artifacts_ingested",
-                   {"collection_id": collection_id, "artifact_count": artifact_count})
+                   {"collection_id": collection_id, "artifact_count": artifact_count,
+                    "inserted": counts["inserted"], "deduped": counts["deduped"]})
     conn.commit()
 
     background.add_task(_run_engine_task)
-    return {"status": "accepted", "collection_id": collection_id}
+    return {"status": "accepted", "collection_id": collection_id,
+            "inserted": counts["inserted"], "deduped": counts["deduped"]}
 
 
 def _run_engine_task():
@@ -326,9 +434,38 @@ async def upload_sample(background: BackgroundTasks, file: UploadFile = File(...
 
 
 @app.post("/api/v1/engine/run")
-def engine_run(conn=Depends(get_conn)):
-    result = run_engine(conn)
+def engine_run(host_id: int | None = None, scan_history: bool = False, conn=Depends(get_conn)):
+    """Run the detection engine, optionally scoped to a single endpoint.
+
+    host_id limits the scan to that host's unprocessed collections. scan_history
+    additionally queues containment approvals for recent detections (capped), so
+    a newly created policy can be applied without a full unfiltered history scan.
+    """
+    host_ids = [host_id] if host_id else None
+    result = run_engine(conn, host_ids=host_ids, scan_history=scan_history)
     database.audit(conn, "analyst", "engine_manual_run", result)
+    return result
+
+
+class DemoPurgeRequest(BaseModel):
+    ioc_source: str | None = None
+    port: int = 4444
+
+
+@app.post("/api/v1/demo/purge")
+def demo_purge(body: DemoPurgeRequest, ctx=Depends(auth_host)):
+    """Remove only this host's demo-scoped signals (auth: the host itself).
+
+    Lets a remote endpoint self-clean after running the capability demo without
+    shell access to the server. Scoped to demo markers + the demo IOC source +
+    loopback port, and to the authenticated host, so real telemetry is untouched.
+    """
+    from server import demo
+    conn = ctx["conn"]
+    host = ctx["host"]
+    result = demo.purge_host_demo_data(conn, host["id"], body.ioc_source, body.port)
+    database.audit(conn, f"host:{host['hostname']}", "demo_data_purged", result)
+    conn.commit()
     return result
 
 
@@ -336,11 +473,20 @@ def engine_run(conn=Depends(get_conn)):
 def list_hosts(conn=Depends(get_conn)):
     rows = conn.execute(
         """SELECT h.id, h.client_id, h.hostname, h.os_type, h.docker_engine_flag,
-                  h.enrolled_at_utc, h.last_seen_utc, h.is_active,
-                  (SELECT COUNT(*) FROM detections d WHERE d.host_id=h.id) AS detection_count
+                  h.enrolled_at_utc, h.last_seen_utc, h.is_active, h.agent_version,
+                  h.agent_desired_state, h.agent_reported_state, h.last_heartbeat_utc,
+                  h.agent_state_changed_at_utc,
+                  (SELECT COUNT(*) FROM detections d WHERE d.host_id=h.id) AS detection_count,
+                  (SELECT COUNT(*) FROM agent_commands c
+                    WHERE c.host_id=h.id AND c.status IN ('pending','claimed')) AS commands_active
            FROM hosts h ORDER BY h.id"""
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["agent_status"] = classify_agent_status(row)
+        out.append(item)
+    return out
 
 
 @app.post("/api/v1/hosts/{host_id}/revoke")
@@ -352,6 +498,195 @@ def revoke_host(host_id: int, conn=Depends(get_conn)):
     database.audit(conn, "analyst", "host_revoked", {"host_id": host_id, "hostname": row["hostname"]})
     conn.commit()
     return {"status": "revoked", "host_id": host_id}
+
+
+def classify_agent_status(row, now=None):
+    """Derive the effective agent status for an endpoint record.
+
+    revoked  - API key disabled by an analyst
+    paused   - analyst asked the agent to stop collecting
+    never    - enrolled but no heartbeat ever received
+    offline  - no recent heartbeat (endpoint down, agent stopped or unreachable)
+    running  - fresh heartbeat and collecting
+    """
+    def field(name):
+        try:
+            return row[name]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    if not field("is_active"):
+        return "revoked"
+    if (field("agent_desired_state") or "running") == "paused":
+        return "paused"
+    last = field("last_heartbeat_utc")
+    if not last:
+        return "never"
+    now = now or datetime.now(timezone.utc)
+    try:
+        seen = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "never"
+    stale_after = int(os.environ.get("ATOR_HEARTBEAT_STALE_SECONDS", "180"))
+    if (now - seen).total_seconds() > stale_after:
+        return "offline"
+    return "running"
+
+
+def _agent_state_changed(conn, host_id, desired, actor):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE hosts SET agent_desired_state=?, agent_state_changed_at_utc=? WHERE id=?",
+        (desired, now, host_id),
+    )
+    database.audit(conn, actor, "agent_state_changed", {"host_id": host_id, "desired_state": desired})
+
+
+def _queue_command(conn, host_id, command, actor="analyst-ui"):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cur = conn.execute(
+        """INSERT INTO agent_commands (host_id, command, status, requested_by, created_at_utc)
+           VALUES (?,?,'pending',?,?)""",
+        (host_id, command, actor, now),
+    )
+    return cur.lastrowid
+
+
+@app.post("/api/v1/agent/heartbeat")
+def agent_heartbeat(body: HeartbeatRequest, ctx=Depends(auth_host)):
+    """Agent liveness + control channel.
+
+    The server cannot dial the endpoint, so the agent polls here: each call
+    records liveness and returns the desired state plus any queued commands
+    (manual collection requests). Pending commands are claimed on delivery.
+    """
+    conn = ctx["conn"]
+    host = ctx["host"]
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        """UPDATE hosts SET last_seen_utc=?, last_heartbeat_utc=?, agent_reported_state=?,
+                            agent_version=COALESCE(?, agent_version)
+           WHERE id=?""",
+        (now, now, body.state, body.agent_version, host["id"]),
+    )
+    desired = conn.execute(
+        "SELECT agent_desired_state FROM hosts WHERE id=?", (host["id"],)
+    ).fetchone()["agent_desired_state"] or "running"
+
+    commands = []
+    if desired == "running":
+        commands = [
+            dict(r) for r in conn.execute(
+                """SELECT id, command FROM agent_commands
+                   WHERE host_id=? AND status='pending' ORDER BY id LIMIT 5""",
+                (host["id"],),
+            )
+        ]
+        for cmd in commands:
+            conn.execute(
+                "UPDATE agent_commands SET status='claimed', claimed_at_utc=? WHERE id=?",
+                (now, cmd["id"]),
+            )
+    conn.commit()
+    return {
+        "desired_state": desired,
+        "heartbeat_interval_seconds": int(os.environ.get("ATOR_HEARTBEAT_INTERVAL", "20")),
+        "commands": commands,
+        "server_time_utc": now,
+    }
+
+
+@app.post("/api/v1/agent/commands/{command_id}/result")
+def agent_command_result(command_id: int, body: CommandResultRequest, ctx=Depends(auth_host)):
+    conn = ctx["conn"]
+    host = ctx["host"]
+    row = conn.execute(
+        "SELECT * FROM agent_commands WHERE id=? AND host_id=?", (command_id, host["id"])
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "command not found")
+    if row["status"] in ("done", "failed"):
+        raise HTTPException(409, f"already finished: {row['status']}")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE agent_commands SET status=?, finished_at_utc=?, result=? WHERE id=?",
+        (body.status, now, json.dumps(body.detail or {}), command_id),
+    )
+    database.audit(conn, f"host:{host['hostname']}", f"agent_command_{body.status}",
+                   {"command_id": command_id, "command": row["command"]})
+    conn.commit()
+    return {"status": "ok", "command_id": command_id, "command_status": body.status}
+
+
+@app.get("/api/v1/hosts/{host_id}/commands")
+def list_host_commands(host_id: int, limit: int = 20, conn=Depends(get_conn)):
+    rows = conn.execute(
+        "SELECT * FROM agent_commands WHERE host_id=? ORDER BY id DESC LIMIT ?",
+        (host_id, max(1, min(limit, 200))),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/v1/hosts/{host_id}/agent/state")
+def set_agent_state(host_id: int, body: AgentStateRequest, conn=Depends(get_conn)):
+    """Pause or resume an endpoint's agent (applied on its next heartbeat)."""
+    row = conn.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "host not found")
+    if not row["is_active"]:
+        raise HTTPException(409, "host API key is revoked")
+    _agent_state_changed(conn, host_id, body.state, body.requested_by)
+    conn.commit()
+    return {"status": "ok", "host_id": host_id, "desired_state": body.state,
+            "note": "the agent applies this on its next heartbeat"}
+
+
+@app.post("/api/v1/hosts/{host_id}/collect")
+def request_collection(host_id: int, conn=Depends(get_conn)):
+    """Queue an immediate collection on the endpoint (delivered via heartbeat)."""
+    row = conn.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "host not found")
+    if not row["is_active"]:
+        raise HTTPException(409, "host API key is revoked")
+    if (row["agent_desired_state"] or "running") == "paused":
+        raise HTTPException(409, "agent is paused - resume it before requesting a collection")
+    command_id = _queue_command(conn, host_id, "collect_now")
+    database.audit(conn, "analyst-ui", "collection_requested",
+                   {"host_id": host_id, "command_id": command_id})
+    conn.commit()
+    return {"status": "queued", "host_id": host_id, "command_id": command_id,
+            "note": "the endpoint collects on its next heartbeat"}
+
+
+@app.post("/api/v1/hosts/{host_id}/scan")
+def scan_host(host_id: int, scan_history: bool = False, conn=Depends(get_conn)):
+    """Run detection immediately over this endpoint's unprocessed collections.
+
+    Server-side and synchronous, so the analyst gets results now instead of
+    waiting for the next agent cycle.
+    """
+    row = conn.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "host not found")
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    command_id = conn.execute(
+        """INSERT INTO agent_commands (host_id, command, status, requested_by,
+                                       created_at_utc, claimed_at_utc, finished_at_utc)
+           VALUES (?,'detect_now','claimed','analyst-ui',?,?,?)""",
+        (host_id, now, now, now),
+    ).lastrowid
+    result = run_engine(conn, host_ids=[host_id], scan_history=scan_history)
+    conn.execute(
+        "UPDATE agent_commands SET status='done', result=? WHERE id=?",
+        (json.dumps(result, default=str), command_id),
+    )
+    database.audit(conn, "analyst-ui", "host_scan_requested",
+                   {"host_id": host_id, "command_id": command_id, **result})
+    conn.commit()
+    return {"status": "ok", "host_id": host_id, "command_id": command_id, "result": result}
 
 
 @app.get("/api/v1/detections")
@@ -392,22 +727,56 @@ def get_soc(host_id: int, conn=Depends(get_conn)):
 @app.post("/api/v1/policies")
 def create_policy(body: PolicyRequest, conn=Depends(get_conn)):
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cooldown = body.cooldown_minutes if body.cooldown_minutes is not None else 60
     conn.execute(
-        """INSERT INTO policies (name, min_severity, technique_ids, mode, action, enabled, created_at_utc)
-           VALUES (?,?,?,?,?,1,?)
+        """INSERT INTO policies (name, min_severity, technique_ids, mode, action,
+                                 cooldown_minutes, enabled, created_at_utc)
+           VALUES (?,?,?,?,?,?,1,?)
            ON CONFLICT(name) DO UPDATE SET min_severity=excluded.min_severity,
-               mode=excluded.mode, action=excluded.action""",
-        (body.name, body.min_severity, json.dumps(body.technique_ids) if body.technique_ids else None,
-         body.mode, body.action, now),
+               mode=excluded.mode, action=excluded.action,
+               technique_ids=excluded.technique_ids,
+               cooldown_minutes=excluded.cooldown_minutes""",
+        (body.name, body.min_severity,
+         json.dumps(body.technique_ids) if body.technique_ids else None,
+         body.mode, body.action, max(0, cooldown), now),
     )
     database.audit(conn, "analyst", "policy_upserted", body.model_dump())
     conn.commit()
-    return {"status": "ok"}
+    # Evaluate the new/updated policy against recent telemetry right away so an
+    # analyst sees the effect without waiting for the next background cycle.
+    created = run_engine(conn, scan_history=True).get("approvals_created", 0)
+    return {"status": "ok", "approvals_created": created}
 
 
 @app.get("/api/v1/policies")
 def list_policies(conn=Depends(get_conn)):
     return [dict(r) for r in conn.execute("SELECT * FROM policies ORDER BY id DESC")]
+
+
+@app.post("/api/v1/policies/{policy_id}/delete")
+def delete_policy(policy_id: int, conn=Depends(get_conn)):
+    row = conn.execute("SELECT name FROM policies WHERE id=?", (policy_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "policy not found")
+    conn.execute("DELETE FROM policies WHERE id=?", (policy_id,))
+    database.audit(conn, "analyst", "policy_deleted",
+                   {"policy_id": policy_id, "name": row["name"]})
+    conn.commit()
+    return {"status": "ok", "policy_id": policy_id}
+
+
+@app.post("/api/v1/policies/{policy_id}/toggle")
+def toggle_policy(policy_id: int, conn=Depends(get_conn)):
+    """Enable or disable a containment policy (analyst quick toggle)."""
+    row = conn.execute("SELECT enabled, name FROM policies WHERE id=?", (policy_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "policy not found")
+    new_state = 0 if row["enabled"] else 1
+    conn.execute("UPDATE policies SET enabled=? WHERE id=?", (new_state, policy_id))
+    database.audit(conn, "analyst", "policy_toggled",
+                   {"policy_id": policy_id, "name": row["name"], "enabled": new_state})
+    conn.commit()
+    return {"status": "ok", "policy_id": policy_id, "enabled": new_state}
 
 
 @app.get("/api/v1/approvals")
@@ -525,6 +894,126 @@ def export_navigator(conn=Depends(get_conn)):
     return FileResponse(path, media_type="application/json", filename=os_path(path))
 
 
+def _report_history_filter(year, month, day, date_from, date_to):
+    """Build a (sql, params) fragment for flexible generated_at_utc filtering.
+
+    Supports a Y / Y-M / Y-M-D prefix match and/or an explicit from..to range,
+    so the UI can filter by year, month, day, or an arbitrary window.
+    """
+    clauses, params = [], []
+    if year:
+        prefix = f"{int(year):04d}"
+        if month:
+            prefix += f"-{int(month):02d}"
+            if day:
+                prefix += f"-{int(day):02d}"
+        clauses.append("generated_at_utc LIKE ?")
+        params.append(prefix + "%")
+    if date_from:
+        clauses.append("generated_at_utc >= ?")
+        params.append(date_from)
+    if date_to:
+        # Inclusive end-of-day when only a date is supplied.
+        params.append(date_to if "T" in date_to else date_to + "T23:59:59")
+        clauses.append("generated_at_utc <= ?")
+    return (" AND " + " AND ".join(clauses) if clauses else ""), params
+
+
+@app.get("/api/v1/reports")
+def list_reports(host_id: int | None = None, kind: str | None = None,
+                 year: int | None = None, month: int | None = None, day: int | None = None,
+                 date_from: str | None = None, date_to: str | None = None,
+                 limit: int = 200, conn=Depends(get_conn)):
+    """Report history, filterable by endpoint, kind, and time (year/month/day
+    or an explicit from..to range)."""
+    sql = ("SELECT r.*, h.hostname, h.os_type FROM report_history r "
+           "JOIN hosts h ON h.id = r.host_id WHERE 1=1")
+    params = []
+    if host_id:
+        sql += " AND r.host_id=?"
+        params.append(host_id)
+    if kind:
+        sql += " AND r.kind=?"
+        params.append(kind)
+    frag, fparams = _report_history_filter(year, month, day, date_from, date_to)
+    sql += frag.replace("generated_at_utc", "r.generated_at_utc")
+    params += fparams
+    sql += " ORDER BY r.generated_at_utc DESC LIMIT ?"
+    params.append(max(1, min(limit, 1000)))
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    for r in rows:
+        r["available"] = bool(r.get("path") and os.path.exists(r["path"]))
+    return rows
+
+
+@app.get("/api/v1/reports/facets")
+def report_facets(host_id: int | None = None, conn=Depends(get_conn)):
+    """Distinct years / months available for the date-filter controls."""
+    sql = "SELECT generated_at_utc FROM report_history"
+    params = []
+    if host_id:
+        sql += " WHERE host_id=?"
+        params.append(host_id)
+    stamps = [r["generated_at_utc"] for r in conn.execute(sql, params).fetchall()]
+    years = sorted({s[:4] for s in stamps if s}, reverse=True)
+    months = sorted({s[:7] for s in stamps if s}, reverse=True)
+    return {"years": years, "months": months, "total": len(stamps)}
+
+
+@app.get("/api/v1/reports/{report_id}/download")
+def download_report(report_id: int, conn=Depends(get_conn)):
+    row = conn.execute("SELECT * FROM report_history WHERE id=?", (report_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "report not found")
+    if not row["path"] or not os.path.exists(row["path"]):
+        raise HTTPException(410, "report file no longer on disk; regenerate it")
+    media = {"pdf": "application/pdf", "json": "application/json",
+             "stix": "application/json"}.get(row["kind"], "application/octet-stream")
+    return FileResponse(row["path"], media_type=media, filename=row["filename"])
+
+
+@app.post("/api/v1/hosts/{host_id}/reports")
+def generate_report(host_id: int, kind: str = "pdf", conn=Depends(get_conn)):
+    """Generate a fresh report for an endpoint and record it in history."""
+    gen = {"pdf": reporter.generate_pdf, "json": reporter.generate_json,
+           "stix": reporter.generate_stix}.get(kind)
+    if not gen:
+        raise HTTPException(400, "kind must be pdf, json, or stix")
+    path = gen(conn, host_id)
+    if not path:
+        raise HTTPException(404, "host not found")
+    row = conn.execute(
+        "SELECT * FROM report_history WHERE host_id=? AND path=? ORDER BY id DESC LIMIT 1",
+        (host_id, path)).fetchone()
+    return {"report_id": row["id"] if row else None, "filename": os_path(path), "kind": kind}
+
+
+@app.get("/api/v1/stats/endpoints")
+def stats_endpoints(conn=Depends(get_conn)):
+    """Per-endpoint detection breakdown for the overview page (separation +
+    filters happen client-side)."""
+    rows = conn.execute(
+        """SELECT h.id, h.hostname, h.os_type, h.is_active, h.docker_engine_flag,
+                  h.last_seen_utc, h.last_heartbeat_utc, h.agent_desired_state,
+                  COALESCE(SUM(CASE WHEN d.severity='critical' THEN 1 ELSE 0 END),0) AS critical,
+                  COALESCE(SUM(CASE WHEN d.severity='high'     THEN 1 ELSE 0 END),0) AS high,
+                  COALESCE(SUM(CASE WHEN d.severity='medium'   THEN 1 ELSE 0 END),0) AS medium,
+                  COALESCE(SUM(CASE WHEN d.severity='low'      THEN 1 ELSE 0 END),0) AS low,
+                  COUNT(d.id) AS detection_total,
+                  MAX(d.detected_at_utc) AS last_detection_utc
+           FROM hosts h LEFT JOIN detections d ON d.host_id = h.id
+           GROUP BY h.id ORDER BY critical DESC, high DESC, detection_total DESC, h.hostname"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["agent_status"] = classify_agent_status(r)
+        if (d.get("agent_desired_state") == "paused") and d["agent_status"] == "running":
+            d["agent_status"] = "paused"
+        out.append(d)
+    return out
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
@@ -563,6 +1052,92 @@ def stats_overview(conn=Depends(get_conn)):
         "approvals_pending": pending,
         "trend": trend,
         "generated_at": now.isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/api/v1/stats/footprint")
+def stats_footprint(conn=Depends(get_conn)):
+    """Fleet-wide 'how heavy is ATOR on endpoints' metrics.
+
+    Aggregates the latest agent self-impact + system resource sample per active
+    host into headline KPIs and a lightweight/moderate/heavy verdict.
+    """
+    now = datetime.now(timezone.utc)
+    self_rows = conn.execute(
+        """SELECT h.id, s.agent_cpu_pct, s.agent_mem_mb, s.agent_threads, s.agent_fds,
+                  s.collection_duration_ms, s.payload_size_bytes, s.spool_count,
+                  s.telemetry_mode, s.sampled_at_utc
+           FROM hosts h LEFT JOIN agent_self_samples s ON s.id = (
+               SELECT MAX(id) FROM agent_self_samples WHERE host_id=h.id)
+           WHERE h.is_active=1"""
+    ).fetchall()
+    res_rows = {r["id"]: r for r in conn.execute(
+        """SELECT h.id, s.cpu_pct, s.mem_pct, s.sampled_at_utc
+           FROM hosts h LEFT JOIN resource_samples s ON s.id = (
+               SELECT MAX(id) FROM resource_samples WHERE host_id=h.id)
+           WHERE h.is_active=1""").fetchall()}
+
+    def _fresh(ts, secs=120):
+        if not ts:
+            return False
+        try:
+            return (now - datetime.fromisoformat(str(ts).replace("Z", "+00:00"))).total_seconds() <= secs
+        except ValueError:
+            return False
+
+    active = total = 0
+    agent_cpu, agent_mem, coll_ms, sys_cpu, sys_mem = [], [], [], [], []
+    total_agent_mem = 0.0
+    modes = {"full": 0, "lightweight": 0}
+    for r in self_rows:
+        total += 1
+        reporting = _fresh(r["sampled_at_utc"])
+        if reporting:
+            active += 1
+            if r["agent_cpu_pct"] is not None:
+                agent_cpu.append(r["agent_cpu_pct"])
+            if r["agent_mem_mb"] is not None:
+                agent_mem.append(r["agent_mem_mb"]); total_agent_mem += r["agent_mem_mb"]
+            if r["collection_duration_ms"] is not None:
+                coll_ms.append(r["collection_duration_ms"])
+            if r["telemetry_mode"] in modes:
+                modes[r["telemetry_mode"]] += 1
+        res = res_rows.get(r["id"])
+        if res and _fresh(res["sampled_at_utc"]):
+            if res["cpu_pct"] is not None:
+                sys_cpu.append(res["cpu_pct"])
+            if res["mem_pct"] is not None:
+                sys_mem.append(res["mem_pct"])
+
+    def avg(xs):
+        return round(sum(xs) / len(xs), 2) if xs else 0.0
+
+    day_ago = (now - timedelta(hours=24)).isoformat(timespec="seconds")
+    telemetry_bytes = conn.execute(
+        "SELECT COALESCE(SUM(payload_size_bytes),0) n FROM agent_self_samples WHERE sampled_at_utc >= ?",
+        (day_ago,)).fetchone()["n"]
+    collections_24h = conn.execute(
+        "SELECT COUNT(*) n FROM evidence_manifests WHERE received_at_utc >= ?", (day_ago,)).fetchone()["n"]
+    spool_backlog = conn.execute(
+        "SELECT COALESCE(SUM(spool_count),0) n FROM (SELECT host_id, spool_count FROM agent_self_samples s "
+        "WHERE s.id=(SELECT MAX(id) FROM agent_self_samples WHERE host_id=s.host_id))").fetchone()["n"]
+
+    a_cpu, a_mem = avg(agent_cpu), avg(agent_mem)
+    if a_cpu <= 3 and a_mem <= 90:
+        verdict = "Lightweight"
+    elif a_cpu <= 8 and a_mem <= 180:
+        verdict = "Moderate"
+    else:
+        verdict = "Heavy"
+    return {
+        "reporting": active, "endpoints": total,
+        "avg_agent_cpu_pct": a_cpu, "avg_agent_mem_mb": a_mem,
+        "total_agent_mem_mb": round(total_agent_mem, 1),
+        "avg_collection_ms": avg(coll_ms),
+        "avg_sys_cpu_pct": avg(sys_cpu), "avg_sys_mem_pct": avg(sys_mem),
+        "telemetry_bytes_24h": telemetry_bytes, "collections_24h": collections_24h,
+        "spool_backlog": spool_backlog, "telemetry_modes": modes,
+        "verdict": verdict, "generated_at": now.isoformat(timespec="seconds"),
     }
 
 
@@ -810,6 +1385,49 @@ def ingest_resources(body: SamplesRequest, ctx=Depends(auth_host)):
     return {"status": "accepted", "count": len(samples), "alerts": len(alerts_all)}
 
 
+@app.post("/api/v1/agent-self/ingest", status_code=202)
+def ingest_agent_self(body: AgentSelfSamplesRequest, ctx=Depends(auth_host)):
+    """Ingest lightweight agent self-monitoring samples."""
+    conn = ctx["conn"]
+    host = ctx["host"]
+    samples = [s.model_dump() for s in body.samples]
+    if not samples:
+        raise HTTPException(status_code=400, detail="no samples provided")
+    if len(samples) > 24:
+        raise HTTPException(status_code=400, detail="too many samples in batch (max 24)")
+
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    for s in samples:
+        ts = s.get("sampled_at_utc") or now_iso
+        conn.execute(
+            """INSERT INTO agent_self_samples (
+                host_id, sampled_at_utc, agent_cpu_pct, agent_mem_mb, agent_threads,
+                agent_fds, agent_cpu_time_user, agent_cpu_time_system,
+                collection_duration_ms, payload_size_bytes, spool_count, telemetry_mode
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                host["id"],
+                ts,
+                s.get("agent_cpu_pct"),
+                s.get("agent_mem_mb"),
+                s.get("agent_threads"),
+                s.get("agent_fds"),
+                s.get("agent_cpu_time_user"),
+                s.get("agent_cpu_time_system"),
+                s.get("collection_duration_ms"),
+                s.get("payload_size_bytes"),
+                s.get("spool_count"),
+                "lightweight",
+            ),
+        )
+
+    _maybe_prune_resources(conn)
+    conn.commit()
+    database.audit(conn, f"host:{host['hostname']}", "agent_self_ingested", {"count": len(samples)})
+    return {"status": "accepted", "count": len(samples)}
+
+
 @app.get("/api/v1/resources/latest")
 def resources_latest(conn=Depends(get_conn)):
     """Latest resource sample per active host."""
@@ -967,6 +1585,427 @@ async def stream_resources(request: Request, interval: float = 5.0, limit: int =
             for a in new_alerts:
                 last_alert_id = max(last_alert_id, a["id"])
                 yield f"data: {json.dumps({'samples': [], 'alerts': [a]})}\n\n"
+            yield f": heartbeat {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n\n"
+            await sleep(interval)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# =============================================================================
+# ENROLLMENT REQUEST ENDPOINTS
+# =============================================================================
+
+class EnrollmentRequestCreate(BaseModel):
+    hostname: str = Field(min_length=1, max_length=255)
+    os_type: str = Field(pattern="^(windows|linux|docker_host)$")
+    docker_engine_flag: int = 0
+    requested_features: dict | None = None
+    agent_version: str | None = None
+
+
+class EnrollmentRequestReview(BaseModel):
+    action: str = Field(pattern="^(accept|reject)$")
+    analyst: str = "analyst"
+    rejection_reason: str | None = None
+
+
+class AgentEnrollWithToken(BaseModel):
+    enrollment_token: str
+    agent_version: str | None = None
+
+
+@app.post("/api/v1/enroll/request")
+def create_enrollment_request(body: EnrollmentRequestCreate, conn=Depends(get_conn)):
+    """Submit a new enrollment request from an endpoint user."""
+    import uuid
+    request_token = str(uuid.uuid4())
+    enrollment_token = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds")
+
+    requested_features_json = json.dumps(body.requested_features) if body.requested_features else None
+
+    cur = conn.execute(
+        """INSERT INTO enrollment_requests
+           (request_token, hostname, os_type, docker_engine_flag, requested_features,
+            agent_version, status, requested_at_utc, expires_at_utc, enrollment_token)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (request_token, body.hostname, body.os_type, body.docker_engine_flag,
+         requested_features_json, body.agent_version, "pending", datetime.now(timezone.utc).isoformat(timespec="seconds"),
+         (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds"),
+         enrollment_token),
+    )
+
+    database.audit(conn, "server", "enrollment_requested",
+                   {"request_token": request_token, "hostname": body.hostname, "os_type": body.os_type})
+    conn.commit()
+
+    return {
+        "request_token": request_token,
+        "enrollment_token": enrollment_token,
+        "status": "pending",
+        "message": "Enrollment request submitted. Awaiting admin approval."
+    }
+
+
+@app.get("/api/v1/enroll/status/{request_token}")
+def get_enrollment_status(request_token: str, conn=Depends(get_conn)):
+    """Check the status of an enrollment request."""
+    row = conn.execute(
+        "SELECT * FROM enrollment_requests WHERE request_token=?", (request_token,)
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Enrollment request not found")
+
+    return dict(row)
+
+
+@app.post("/api/v1/enroll/enroll")
+def enroll_with_token(body: AgentEnrollWithToken, conn=Depends(get_conn)):
+    """Agent enrolls using an enrollment token issued after admin approval."""
+    row = conn.execute(
+        "SELECT * FROM enrollment_requests WHERE enrollment_token=?", (body.enrollment_token,)
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Invalid enrollment token")
+
+    # Checked before the status gate: a consumed token has status 'enrolled',
+    # and agents rely on 409 to recognise an idempotent bootstrap re-run.
+    if row["enrolled_at_utc"] or row["status"] == "enrolled":
+        raise HTTPException(409, "This enrollment token has already been used")
+
+    if row["status"] != "accepted":
+        raise HTTPException(403, f"Enrollment request not accepted (status: {row['status']})")
+
+    # Generate credentials
+    api_key = security.generate_api_key()
+    client_id = security.new_client_id()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    # Create host record
+    cur = conn.execute(
+        """INSERT INTO hosts (client_id, hostname, os_type, docker_engine_flag, api_key_hash,
+                              agent_version, enrolled_at_utc, last_seen_utc)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (client_id,
+         row["hostname"], row["os_type"], row["docker_engine_flag"],
+         security.hash_secret(api_key), body.agent_version or row["agent_version"], now, now),
+    )
+    host_id = cur.lastrowid
+
+    # Update enrollment request
+    conn.execute(
+        "UPDATE enrollment_requests SET status='enrolled', enrolled_at_utc=? WHERE id=?",
+        (datetime.now(timezone.utc).isoformat(timespec="seconds"), row["id"]),
+    )
+
+    database.audit(conn, "server", "host_enrolled_via_token",
+                   {"host_id": host_id, "request_token": row["request_token"]})
+    conn.commit()
+
+    return {
+        "host_id": host_id,
+        "client_id": client_id,
+        "api_key": api_key,
+        "message": "Enrollment successful"
+    }
+
+
+# Agent package + bootstrap downloads. These shadow the /static mount (routes
+# are matched before mounts) so endpoints always get an agent built from the
+# current source instead of a stale pre-built archive.
+@app.get("/static/ator-agent-deploy.zip")
+def download_agent_zip():
+    from fastapi.responses import Response
+    from server import agent_package
+    return Response(agent_package.build("zip"), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="ator-agent-deploy.zip"',
+                             "Cache-Control": "no-store"})
+
+
+@app.get("/static/ator-agent-deploy.tar.gz")
+def download_agent_targz():
+    from fastapi.responses import Response
+    from server import agent_package
+    return Response(agent_package.build("tar.gz"), media_type="application/gzip",
+                    headers={"Content-Disposition": 'attachment; filename="ator-agent-deploy.tar.gz"',
+                             "Cache-Control": "no-store"})
+
+
+def _bootstrap_script_response(script_name):
+    from fastapi.responses import Response
+    from server import agent_package
+    return Response(agent_package.bootstrap_script(script_name),
+                    media_type=agent_package.BOOTSTRAP_SCRIPTS[script_name],
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/static/bootstrap_endpoint.ps1")
+def download_windows_bootstrap():
+    return _bootstrap_script_response("bootstrap_endpoint.ps1")
+
+
+@app.get("/static/bootstrap_endpoint.sh")
+def download_linux_bootstrap():
+    return _bootstrap_script_response("bootstrap_endpoint.sh")
+
+
+# Admin endpoints for managing enrollment requests
+@app.get("/api/v1/enrollments")
+def list_enrollment_requests(
+    status: str = "all",
+    platform: str | None = None,
+    q: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 500,
+    conn=Depends(get_conn),
+):
+    """List enrollment requests with optional status / platform / search / time
+    filters. status='all' returns every request."""
+    sql = "SELECT * FROM enrollment_requests WHERE 1=1"
+    params = []
+    if status and status != "all":
+        sql += " AND status=?"
+        params.append(status)
+    if platform:
+        sql += " AND os_type=?"
+        params.append(platform)
+    if q:
+        sql += " AND (LOWER(hostname) LIKE ? OR request_token LIKE ?)"
+        like = f"%{q.lower()}%"
+        params += [like, f"%{q}%"]
+    if date_from:
+        sql += " AND requested_at_utc >= ?"
+        params.append(date_from)
+    if date_to:
+        sql += " AND requested_at_utc <= ?"
+        params.append(date_to if "T" in date_to else date_to + "T23:59:59")
+    sql += " ORDER BY requested_at_utc DESC LIMIT ?"
+    params.append(max(1, min(limit, 2000)))
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+class EnrollmentPurgeRequest(BaseModel):
+    """Bulk-delete filter. Any combination narrows the deletion; an empty body
+    with confirm=all clears every request."""
+    statuses: list[str] | None = None
+    platform: str | None = None
+    before: str | None = None          # delete requests requested before this ISO date
+    tokens: list[str] | None = None    # explicit request_tokens
+    analyst: str = "analyst"
+
+
+@app.delete("/api/v1/enrollments/{request_token}")
+def delete_enrollment_request(request_token: str, conn=Depends(get_conn)):
+    """Delete a single enrollment request record (does not affect an already
+    enrolled host)."""
+    row = conn.execute(
+        "SELECT id FROM enrollment_requests WHERE request_token=?", (request_token,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Enrollment request not found")
+    conn.execute("DELETE FROM enrollment_requests WHERE request_token=?", (request_token,))
+    database.audit(conn, "analyst", "enrollment_deleted", {"request_token": request_token})
+    conn.commit()
+    return {"status": "deleted", "request_token": request_token}
+
+
+@app.post("/api/v1/enrollments/purge")
+def purge_enrollment_requests(body: EnrollmentPurgeRequest, conn=Depends(get_conn)):
+    """Bulk-delete enrollment requests matching the given filters.
+
+    Deleting a request record never touches an enrolled host - it only clears
+    the request log. With no filter at all this deletes every request, so the
+    caller (the UI) confirms first.
+    """
+    where, params = ["1=1"], []
+    if body.tokens:
+        marks = ",".join("?" for _ in body.tokens)
+        where.append(f"request_token IN ({marks})")
+        params += body.tokens
+    if body.statuses:
+        marks = ",".join("?" for _ in body.statuses)
+        where.append(f"status IN ({marks})")
+        params += body.statuses
+    if body.platform:
+        where.append("os_type=?")
+        params.append(body.platform)
+    if body.before:
+        where.append("requested_at_utc < ?")
+        params.append(body.before if "T" in body.before else body.before + "T00:00:00")
+    sql = "DELETE FROM enrollment_requests WHERE " + " AND ".join(where)
+    deleted = conn.execute(sql, params).rowcount
+    database.audit(conn, body.analyst, "enrollment_bulk_deleted",
+                   {"deleted": deleted, "statuses": body.statuses, "platform": body.platform,
+                    "before": body.before, "tokens": len(body.tokens or [])})
+    conn.commit()
+    return {"status": "ok", "deleted": deleted}
+
+
+@app.post("/api/v1/enrollments/{request_token}/accept")
+def accept_enrollment_request(request_token: str, body: EnrollmentRequestReview, conn=Depends(get_conn)):
+    """Accept an enrollment request (admin)."""
+    row = conn.execute("SELECT * FROM enrollment_requests WHERE request_token=?", (request_token,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Enrollment request not found")
+
+    if row["status"] != "pending":
+        raise HTTPException(409, f"Request already {row['status']}")
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE enrollment_requests SET status='accepted', reviewed_at_utc=?, reviewed_by=? WHERE request_token=?",
+        (now, body.analyst, request_token)
+    )
+    database.audit(conn, body.analyst, "enrollment_accepted", {"request_token": request_token})
+    conn.commit()
+    return {"status": "accepted", "request_token": request_token}
+
+
+@app.post("/api/v1/enrollments/{request_token}/reject")
+def reject_enrollment_request(request_token: str, body: EnrollmentRequestReview, conn=Depends(get_conn)):
+    """Reject an enrollment request (admin)."""
+    row = conn.execute("SELECT * FROM enrollment_requests WHERE request_token=?", (request_token,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Enrollment request not found")
+
+    if row["status"] != "pending":
+        raise HTTPException(409, f"Request already {row['status']}")
+
+    if not body.rejection_reason:
+        raise HTTPException(400, "Rejection reason required")
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE enrollment_requests SET status='rejected', reviewed_at_utc=?, reviewed_by=?, rejection_reason=? WHERE request_token=?",
+        (now, body.analyst, body.rejection_reason, request_token)
+    )
+    database.audit(conn, body.analyst, "enrollment_rejected",
+                   {"request_token": request_token, "reason": body.rejection_reason})
+    conn.commit()
+    return {"status": "rejected", "request_token": request_token}
+
+
+# =============================================================================
+# LIGHTWEIGHT AGENT SELF TELEMETRY ENDPOINTS
+# =============================================================================
+
+
+@app.get("/api/v1/agent-self/latest")
+def agent_self_latest(conn=Depends(get_conn)):
+    """Latest lightweight agent self sample per active host."""
+    rows = conn.execute(
+        """SELECT h.id, h.hostname, h.os_type, h.docker_engine_flag, h.last_seen_utc,
+                  s.sampled_at_utc, s.agent_cpu_pct, s.agent_mem_mb, s.agent_threads,
+                  s.agent_fds, s.agent_cpu_time_user, s.agent_cpu_time_system,
+                  s.collection_duration_ms, s.payload_size_bytes, s.spool_count,
+                  s.telemetry_mode
+           FROM hosts h
+           LEFT JOIN agent_self_samples s ON s.id = (
+               SELECT MAX(id) FROM agent_self_samples WHERE host_id = h.id
+           )
+           WHERE h.is_active=1
+           ORDER BY h.hostname"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("sampled_at_utc"):
+            try:
+                ts = datetime.fromisoformat(d["sampled_at_utc"].replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - ts).total_seconds()
+                d["stale"] = age > 90  # > 6 missed 30s samples
+            except Exception:
+                d["stale"] = True
+        else:
+            d["stale"] = True
+        out.append(d)
+    return {"hosts": out, "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@app.get("/api/v1/agent-self/history")
+def agent_self_history(
+    host_id: int,
+    minutes: int = 30,
+    metrics: str = "agent_cpu_pct,agent_mem_mb,agent_threads",
+    limit: int = 500,
+    conn=Depends(get_conn),
+):
+    """Time-series history for agent self-monitoring charts."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    metric_list = [m.strip() for m in metrics.split(",") if m.strip()]
+    allowed = {"agent_cpu_pct", "agent_mem_mb", "agent_threads", "agent_fds",
+               "agent_cpu_time_user", "agent_cpu_time_system", "collection_duration_ms",
+               "payload_size_bytes", "spool_count"}
+    metric_list = [m for m in metric_list if m in allowed]
+    if not metric_list:
+        metric_list = ["agent_cpu_pct", "agent_mem_mb", "agent_threads"]
+    cols = ", ".join(metric_list)
+    rows = conn.execute(
+        f"SELECT sampled_at_utc, {cols} FROM agent_self_samples WHERE host_id=? AND sampled_at_utc >= ? ORDER BY id ASC",
+        (host_id, cutoff),
+    ).fetchall()
+    if len(rows) > limit:
+        step = len(rows) / limit
+        rows = [rows[int(i * step)] for i in range(limit)]
+    return {"host_id": host_id, "points": [dict(r) for r in rows]}
+
+
+@app.get("/api/v1/stream/agent-self")
+async def stream_agent_self(request: Request, interval: float = 5.0, limit: int = 15):
+    """SSE stream for lightweight agent self telemetry."""
+    from asyncio import sleep
+    from starlette.concurrency import run_in_threadpool
+
+    interval = max(2.0, min(interval, 60.0))
+    limit = max(1, min(limit, 50))
+
+    def _query(cursor):
+        c = database.connect()
+        try:
+            rows = c.execute(
+                """SELECT s.*, h.hostname, h.os_type, h.docker_engine_flag
+                   FROM agent_self_samples s JOIN hosts h ON h.id=s.host_id
+                   WHERE s.id > ? ORDER BY s.id ASC LIMIT ?""",
+                (cursor, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+    async def gen():
+        def _initial():
+            c = database.connect()
+            try:
+                rows = c.execute(
+                    """SELECT s.*, h.hostname, h.os_type, h.docker_engine_flag
+                       FROM agent_self_samples s JOIN hosts h ON h.id=s.host_id
+                       WHERE s.id IN (
+                           SELECT MAX(id) FROM agent_self_samples GROUP BY host_id
+                       )"""
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                c.close()
+
+        samples = await run_in_threadpool(_initial)
+        last_sample_id = max((s["id"] for s in samples), default=0)
+        for s in samples:
+            yield f"data: {json.dumps({'samples': [s], 'alerts': []})}\n\n"
+        yield ": stream-ready\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            new_samples = await run_in_threadpool(_query, last_sample_id)
+            for s in new_samples:
+                last_sample_id = max(last_sample_id, s["id"])
+                yield f"data: {json.dumps({'samples': [s], 'alerts': []})}\n\n"
             yield f": heartbeat {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n\n"
             await sleep(interval)
 

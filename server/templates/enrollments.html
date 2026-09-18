@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+{% block title %}Enrollment Requests{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <div class="section-label">Endpoint onboarding</div>
+    <h4 class="mb-0">Enrollment Requests</h4>
+  </div>
+  <a class="btn btn-outline-secondary btn-sm" href="/enroll" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right me-1"></i>Public enroll page</a>
+</div>
+
+<div class="card ator-card anim-rise">
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label class="filter-label">Status</label>
+      <div class="segmented" id="fStatus">
+        <button class="seg active" data-status="all">All</button>
+        <button class="seg" data-status="pending">Pending</button>
+        <button class="seg" data-status="accepted">Accepted</button>
+        <button class="seg" data-status="enrolled">Enrolled</button>
+        <button class="seg" data-status="rejected">Rejected</button>
+        <button class="seg" data-status="expired">Expired</button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fPlatform">Platform</label>
+      <select id="fPlatform" class="filter-input">
+        <option value="">All</option>
+        <option value="windows">Windows</option>
+        <option value="linux">Linux</option>
+        <option value="docker_host">Docker</option>
+      </select>
+    </div>
+    <div class="filter-group flex-grow-1">
+      <label class="filter-label" for="fSearch">Search</label>
+      <input type="search" id="fSearch" class="filter-input w-100" placeholder="Hostname or request token&hellip;">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fFrom">From</label>
+      <input type="date" id="fFrom" class="filter-input">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label" for="fTo">To</label>
+      <input type="date" id="fTo" class="filter-input">
+    </div>
+    <button class="btn btn-outline-secondary btn-sm" id="fClear">Clear</button>
+  </div>
+
+  <div class="bulk-bar">
+    <label class="d-inline-flex align-items-center gap-2 m-0">
+      <input type="checkbox" id="selAll" class="form-check-input mt-0"> <span>Select all</span>
+    </label>
+    <span class="sel-count" id="selCount">0 selected</span>
+    <button class="icon-btn danger" id="btnDeleteSelected" disabled><i class="bi bi-trash"></i>Delete selected</button>
+    <span class="spacer"></span>
+    <span class="chip-count" id="rowCount">0</span>
+    <button class="icon-btn" id="btnClearRejected"><i class="bi bi-x-circle"></i>Clear rejected</button>
+    <button class="icon-btn" id="btnClearExpired"><i class="bi bi-clock-history"></i>Clear expired</button>
+    <button class="icon-btn danger" id="btnClearShown"><i class="bi bi-trash3"></i>Clear all shown</button>
+  </div>
+
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover ator-table align-middle mb-0">
+        <thead><tr>
+          <th style="width:36px"></th>
+          <th>ID</th><th>Token</th><th>Hostname</th><th>OS</th><th>Docker</th>
+          <th>Requested (UTC)</th><th>Expires</th><th>Status</th><th class="text-end">Actions</th>
+        </tr></thead>
+        <tbody id="rows">
+          <tr><td colspan="10"><div class="empty-hint">Loading enrollment requests&hellip;</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Reusable modal -->
+<div class="ator-modal" id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h5 id="modalTitle">Details</h5><button class="modal-x" id="modalX" aria-label="Close">&times;</button></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot" id="modalFoot"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var toast = (window.ATOR && window.ATOR.toast) || function () {};
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { status: "all", platform: "", q: "", from: "", to: "" };
+  var rows = [];
+  var selected = new Set();
+
+  function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+  function shortTs(s) { return s ? String(s).replace("T", " ").slice(0, 19) : "—"; }
+
+  var STATUS = {
+    pending: ["warning", "pending"], accepted: ["info", "accepted"],
+    enrolled: ["online", "enrolled"], rejected: ["revoked", "rejected"], expired: ["warning", "expired"]
+  };
+  function statusPill(s) { var m = STATUS[s] || ["", s]; return '<span class="status-pill ' + m[0] + '"><span class="dot"></span>' + esc(m[1]) + '</span>'; }
+
+  function actions(r) {
+    var a = ['<div class="d-inline-flex gap-1">'];
+    if (r.status === "pending") {
+      a.push('<button class="icon-btn accept" data-act="accept" title="Accept"><i class="bi bi-check-lg"></i></button>');
+      a.push('<button class="icon-btn reject" data-act="reject" title="Reject"><i class="bi bi-x-lg"></i></button>');
+    } else if (r.status === "accepted" && r.enrollment_token) {
+      a.push('<button class="icon-btn primary" data-act="copy" title="Copy enrollment token"><i class="bi bi-clipboard"></i></button>');
+    }
+    a.push('<button class="icon-btn" data-act="details" title="Details"><i class="bi bi-eye"></i></button>');
+    a.push('<button class="icon-btn danger" data-act="delete" title="Delete request"><i class="bi bi-trash"></i></button>');
+    a.push('</div>');
+    return a.join("");
+  }
+
+  function render() {
+    var body = $("rows");
+    $("rowCount").textContent = rows.length + (rows.length === 1 ? " request" : " requests");
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="10"><div class="empty-hint">No enrollment requests match these filters.</div></td></tr>';
+      updateSel();
+      return;
+    }
+    body.innerHTML = rows.map(function (r) {
+      var checked = selected.has(r.request_token) ? "checked" : "";
+      return '<tr data-token="' + esc(r.request_token) + '" class="anim-fade">' +
+        '<td><input type="checkbox" class="form-check-input rowchk mt-0" ' + checked + '></td>' +
+        '<td>' + r.id + '</td>' +
+        '<td class="mono small">' + esc(String(r.request_token).slice(0, 8)) + '…</td>' +
+        '<td><b>' + esc(r.hostname) + '</b></td>' +
+        '<td><span class="badge bg-dark">' + esc(r.os_type) + '</span></td>' +
+        '<td>' + (r.docker_engine_flag ? "yes" : "—") + '</td>' +
+        '<td class="mono small">' + esc(shortTs(r.requested_at_utc)) + '</td>' +
+        '<td class="mono small">' + esc(shortTs(r.expires_at_utc)) + '</td>' +
+        '<td>' + statusPill(r.status) + '</td>' +
+        '<td class="text-end">' + actions(r) + '</td>' +
+      '</tr>';
+    }).join("");
+    updateSel();
+  }
+
+  function updateSel() {
+    // Drop selections no longer present.
+    var present = new Set(rows.map(function (r) { return r.request_token; }));
+    selected.forEach(function (t) { if (!present.has(t)) selected.delete(t); });
+    $("selCount").textContent = selected.size + " selected";
+    $("btnDeleteSelected").disabled = selected.size === 0;
+    var all = $("selAll");
+    all.checked = rows.length > 0 && selected.size === rows.length;
+    all.indeterminate = selected.size > 0 && selected.size < rows.length;
+  }
+
+  function qs() {
+    var p = new URLSearchParams({ status: state.status });
+    if (state.platform) p.set("platform", state.platform);
+    if (state.q) p.set("q", state.q);
+    if (state.from) p.set("date_from", state.from);
+    if (state.to) p.set("date_to", state.to);
+    return p.toString();
+  }
+
+  function load() {
+    return fetch("/api/v1/enrollments?" + qs()).then(function (r) { return r.json(); })
+      .then(function (d) { rows = d || []; render(); })
+      .catch(function () { toast("Could not load enrollment requests", "error"); });
+  }
+
+  // ---- Modal helpers ----
+  var modal = $("modal");
+  function closeModal() { modal.hidden = true; $("modalFoot").innerHTML = ""; }
+  $("modalX").addEventListener("click", closeModal);
+  modal.addEventListener("click", function (e) { if (e.target === modal) closeModal(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !modal.hidden) closeModal(); });
+
+  function openModal(title, bodyHtml, buttons) {
+    $("modalTitle").textContent = title;
+    $("modalBody").innerHTML = bodyHtml;
+    var foot = $("modalFoot"); foot.innerHTML = "";
+    (buttons || []).forEach(function (b) {
+      var el = document.createElement("button");
+      el.className = b.cls || "btn btn-sm btn-outline-secondary";
+      el.textContent = b.label;
+      el.addEventListener("click", function () { b.onClick(); });
+      foot.appendChild(el);
+    });
+    modal.hidden = false;
+  }
+
+  function confirmModal(title, message, confirmLabel, onConfirm, danger) {
+    openModal(title, '<p class="mb-0">' + esc(message) + '</p>', [
+      { label: "Cancel", cls: "btn btn-sm btn-outline-secondary", onClick: closeModal },
+      { label: confirmLabel, cls: "btn btn-sm " + (danger ? "btn-danger" : "btn-primary"),
+        onClick: function () { closeModal(); onConfirm(); } }
+    ]);
+  }
+
+  // ---- CRUD actions ----
+  function post(path, body) {
+    return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}) }).then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, j: j }; });
+      });
+  }
+
+  function accept(r) {
+    post("/api/v1/enrollments/" + encodeURIComponent(r.request_token) + "/accept",
+      { action: "accept", analyst: "analyst" }).then(function (res) {
+        if (res.ok) { toast("Accepted — enrollment token issued for " + r.hostname, "success"); load(); }
+        else toast(res.j.detail || "Accept failed", "error");
+      });
+  }
+
+  function reject(r) {
+    var body = '<label class="filter-label d-block mb-1">Rejection reason (required)</label>' +
+      '<textarea id="rejReason" class="form-control" rows="3" placeholder="Why is this request rejected?"></textarea>';
+    openModal("Reject " + r.hostname, body, [
+      { label: "Cancel", cls: "btn btn-sm btn-outline-secondary", onClick: closeModal },
+      { label: "Reject request", cls: "btn btn-sm btn-danger", onClick: function () {
+        var reason = ($("rejReason").value || "").trim();
+        if (!reason) { toast("A rejection reason is required", "warning"); return; }
+        closeModal();
+        post("/api/v1/enrollments/" + encodeURIComponent(r.request_token) + "/reject",
+          { action: "reject", analyst: "analyst", rejection_reason: reason }).then(function (res) {
+            if (res.ok) { toast("Request rejected", "success"); load(); }
+            else toast(res.j.detail || "Reject failed", "error");
+          });
+      } }
+    ]);
+  }
+
+  function copyToken(r) {
+    var t = r.enrollment_token || "";
+    var done = function () { toast("Enrollment token copied", "success"); };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(t).then(done, function () { fallbackCopy(t); done(); });
+    else { fallbackCopy(t); done(); }
+  }
+  function fallbackCopy(t) {
+    var ta = document.createElement("textarea"); ta.value = t; document.body.appendChild(ta);
+    ta.select(); try { document.execCommand("copy"); } catch (e) {} document.body.removeChild(ta);
+  }
+
+  function del(r) {
+    confirmModal("Delete request", "Delete the enrollment request for “" + r.hostname +
+      "”? This clears the request record only; an already-enrolled endpoint is not affected.",
+      "Delete", function () {
+        fetch("/api/v1/enrollments/" + encodeURIComponent(r.request_token), { method: "DELETE" })
+          .then(function (resp) { if (!resp.ok) throw new Error(); toast("Request deleted", "success"); load(); })
+          .catch(function () { toast("Delete failed", "error"); });
+      }, true);
+  }
+
+  function details(r) {
+    var g = [
+      ["ID", r.id], ["Status", r.status], ["Hostname", r.hostname], ["OS", r.os_type],
+      ["Docker engine", r.docker_engine_flag ? "yes" : "no"],
+      ["Requested (UTC)", shortTs(r.requested_at_utc)], ["Expires (UTC)", shortTs(r.expires_at_utc)],
+      ["Reviewed (UTC)", shortTs(r.reviewed_at_utc)], ["Reviewed by", r.reviewed_by || "—"]
+    ];
+    var html = '<dl class="detail-grid">' + g.map(function (x) {
+      return '<div><dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1] == null ? "—" : x[1]) + '</dd></div>';
+    }).join("") +
+      '<div class="full"><dt>Request token</dt><dd><code class="text-break">' + esc(r.request_token) + '</code></dd></div>' +
+      (r.enrollment_token ? '<div class="full"><dt>Enrollment token</dt><dd><code class="text-break">' + esc(r.enrollment_token) + '</code></dd></div>' : "") +
+      (r.rejection_reason ? '<div class="full"><dt>Rejection reason</dt><dd>' + esc(r.rejection_reason) + '</dd></div>' : "") +
+      '</dl>';
+    var buttons = [{ label: "Close", cls: "btn btn-sm btn-outline-secondary", onClick: closeModal }];
+    if (r.enrollment_token) buttons.unshift({ label: "Copy enrollment token", cls: "btn btn-sm btn-primary", onClick: function () { copyToken(r); } });
+    openModal("Request — " + r.hostname, html, buttons);
+  }
+
+  // ---- Row event delegation ----
+  $("rows").addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-act]");
+    if (btn) {
+      var tr = btn.closest("tr"); var r = rows.find(function (x) { return x.request_token === tr.dataset.token; });
+      if (!r) return;
+      ({ accept: accept, reject: reject, copy: copyToken, delete: del, details: details })[btn.dataset.act](r);
+      return;
+    }
+    var chk = e.target.closest(".rowchk");
+    if (chk) {
+      var token = chk.closest("tr").dataset.token;
+      if (chk.checked) selected.add(token); else selected.delete(token);
+      updateSel();
+    }
+  });
+
+  // ---- Bulk ----
+  $("selAll").addEventListener("change", function () {
+    selected.clear();
+    if (this.checked) rows.forEach(function (r) { selected.add(r.request_token); });
+    render();
+  });
+  $("btnDeleteSelected").addEventListener("click", function () {
+    if (!selected.size) return;
+    var tokens = Array.from(selected);
+    confirmModal("Delete selected", "Delete " + tokens.length + " selected request(s)?", "Delete", function () {
+      post("/api/v1/enrollments/purge", { tokens: tokens }).then(function (res) {
+        toast("Deleted " + (res.j.deleted || 0) + " request(s)", "success"); selected.clear(); load();
+      });
+    }, true);
+  });
+  function bulkPurge(label, filter) {
+    confirmModal("Clear requests", "Delete all " + label + "?", "Delete", function () {
+      post("/api/v1/enrollments/purge", filter).then(function (res) {
+        toast("Deleted " + (res.j.deleted || 0) + " request(s)", "success"); load();
+      });
+    }, true);
+  }
+  $("btnClearRejected").addEventListener("click", function () { bulkPurge("rejected requests", { statuses: ["rejected"] }); });
+  $("btnClearExpired").addEventListener("click", function () { bulkPurge("expired requests", { statuses: ["expired"] }); });
+  $("btnClearShown").addEventListener("click", function () {
+    if (!rows.length) { toast("Nothing to clear", "info"); return; }
+    var tokens = rows.map(function (r) { return r.request_token; });
+    confirmModal("Clear all shown", "Delete all " + tokens.length + " request(s) matching the current filters?",
+      "Delete all", function () {
+        post("/api/v1/enrollments/purge", { tokens: tokens }).then(function (res) {
+          toast("Deleted " + (res.j.deleted || 0) + " request(s)", "success"); load();
+        });
+      }, true);
+  });
+
+  // ---- Filters ----
+  $("fStatus").addEventListener("click", function (e) {
+    var b = e.target.closest(".seg"); if (!b) return;
+    this.querySelectorAll(".seg").forEach(function (s) { s.classList.remove("active"); });
+    b.classList.add("active"); state.status = b.dataset.status; load();
+  });
+  $("fPlatform").addEventListener("change", function () { state.platform = this.value; load(); });
+  var t; $("fSearch").addEventListener("input", function () { state.q = this.value; clearTimeout(t); t = setTimeout(load, 200); });
+  $("fFrom").addEventListener("change", function () { state.from = this.value; load(); });
+  $("fTo").addEventListener("change", function () { state.to = this.value; load(); });
+  $("fClear").addEventListener("click", function () {
+    state = { status: "all", platform: "", q: "", from: "", to: "" };
+    $("fPlatform").value = ""; $("fSearch").value = ""; $("fFrom").value = ""; $("fTo").value = "";
+    $("fStatus").querySelectorAll(".seg").forEach(function (s, i) { s.classList.toggle("active", i === 0); });
+    load();
+  });
+
+  load();
+  setInterval(function () { if (modal.hidden) load(); }, 10000);
+})();
+</script>
+{% endblock %}

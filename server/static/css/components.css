@@ -14,6 +14,8 @@
 }
 .status-pill.online { color: var(--ator-low); background: rgba(30, 142, 90, 0.09); }
 .status-pill.revoked { color: #9aa4b2; background: rgba(154, 164, 178, 0.14); }
+.status-pill.warn { color: #8a6d00; background: rgba(240, 173, 78, 0.16); }
+.status-pill.offline { color: #a94442; background: rgba(217, 83, 79, 0.10); }
 
 .empty-hint {
     text-align: center;

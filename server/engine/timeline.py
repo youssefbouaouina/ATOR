@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime, timezone
 
 
@@ -6,7 +6,8 @@ def _parse(ts):
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
     except ValueError:
         return None
 
@@ -19,11 +20,19 @@ def build(conn, host_id=None, limit=500):
         params.append(host_id)
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    limit = max(0, min(int(limit), 5000))
+    total = sum(
+        conn.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
+        for table in ("detections", "raw_logs", "raw_persistence", "evidence_manifests")
+    )
+    if not limit:
+        return {"events": [], "total": total, "skew": [], "skew_scope": "displayed_events"}
+    bounded_params = params + [limit]
     events = []
 
     for row in conn.execute(
-        f"SELECT id, host_id, detected_at_utc, rule_type, rule_name, severity, technique_id, summary FROM detections{where}",
-        params,
+        f"SELECT id, host_id, detected_at_utc, rule_type, rule_name, severity, technique_id, summary FROM detections{where} ORDER BY detected_at_utc DESC, id DESC LIMIT ?",
+        bounded_params,
     ):
         events.append({
             "ts": row["detected_at_utc"],
@@ -37,8 +46,8 @@ def build(conn, host_id=None, limit=500):
     log_where = (" WHERE " + " AND ".join(f"l.{c}" for c in conditions)) if conditions else ""
     for row in conn.execute(
         f"""SELECT l.id, l.host_id, l.event_time_utc, l.source, l.event_id, l.provider, l.payload_json
-            FROM raw_logs l{log_where}""",
-        params,
+            FROM raw_logs l{log_where} ORDER BY l.event_time_utc DESC, l.id DESC LIMIT ?""",
+        bounded_params,
     ):
         payload = {}
         try:
@@ -57,8 +66,8 @@ def build(conn, host_id=None, limit=500):
 
     pers_where = (" WHERE " + " AND ".join(f"p.{c}" for c in conditions)) if conditions else ""
     for row in conn.execute(
-        f"SELECT p.id, p.host_id, p.collected_at_utc, p.ptype, p.name, p.command FROM raw_persistence p{pers_where}",
-        params,
+        f"SELECT p.id, p.host_id, p.collected_at_utc, p.ptype, p.name, p.command FROM raw_persistence p{pers_where} ORDER BY p.collected_at_utc DESC, p.id DESC LIMIT ?",
+        bounded_params,
     ):
         events.append({
             "ts": row["collected_at_utc"],
@@ -74,8 +83,9 @@ def build(conn, host_id=None, limit=500):
         f"""
         SELECT m.id, m.host_id, m.started_at_utc, m.finished_at_utc, m.collection_id, m.artifact_count
         FROM evidence_manifests m{coll_where}
+        ORDER BY COALESCE(NULLIF(m.finished_at_utc, ''), m.started_at_utc) DESC, m.id DESC LIMIT ?
         """,
-        params,
+        bounded_params,
     ):
         events.append({
             "ts": row["finished_at_utc"] or row["started_at_utc"],
@@ -92,10 +102,10 @@ def build(conn, host_id=None, limit=500):
     dated = [e for e in events if e["_dt"] is not None]
     dated.sort(key=lambda e: e["_dt"])
 
-    skew_flags = _detect_skew(dated)
-
-    merged = dated + undated
-    return {"events": merged[:limit], "total": len(events), "skew": skew_flags}
+    selected = dated[-limit:]
+    merged = selected + undated[:max(0, limit - len(selected))]
+    return {"events": merged, "total": total, "skew": _detect_skew(selected),
+            "skew_scope": "displayed_events"}
 
 
 def _detect_skew(sorted_events, threshold_days=45):

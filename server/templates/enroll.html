@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block title %}Enroll Endpoint{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-8 col-lg-6">
+    <div class="card ator-card anim-rise">
+      <div class="card-header">
+        <h4 class="mb-0">Enroll Endpoint</h4>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Register this endpoint with the ATOR DFIR server. An admin will review and approve your request.
+          Once approved, you'll receive an enrollment token to complete the automated enrollment.
+        </p>
+
+        <form id="enrollForm" novalidate>
+          <div class="mb-3">
+            <label for="hostname" class="form-label">Hostname <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="hostname" name="hostname" required
+                   placeholder="e.g., WORKSTATION-01" autocomplete="off">
+            <div class="invalid-feedback">Hostname is required</div>
+          </div>
+
+          <div class="mb-3">
+            <label for="os_type" class="form-label">Operating System <span class="text-danger">*</span></label>
+            <select class="form-select" id="os_type" name="os_type" required>
+              <option value="">Select OS</option>
+              <option value="windows">Windows</option>
+              <option value="linux">Linux</option>
+              <option value="docker_host">Docker Host</option>
+            </select>
+            <div class="invalid-feedback">Please select an operating system</div>
+          </div>
+
+          <div class="mb-3">
+            <label for="docker_engine_flag" class="form-label">Docker Engine</label>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="docker_engine_flag" name="docker_engine_flag" value="1">
+              <label class="form-check-label" for="docker_engine_flag">This host runs Docker engine</label>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Requested Collectors</label>
+            <div class="row g-2">
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="processes" checked>
+                  <label class="form-check-label">Processes</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="network" checked>
+                  <label class="form-check-label">Network</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="persistence" checked>
+                  <label class="form-check-label">Persistence</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="logs" checked>
+                  <label class="form-check-label">Logs</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="files_triage" checked>
+                  <label class="form-check-label">File Triage</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="containers" checked>
+                  <label class="form-check-label">Containers</label>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="collectors" value="resources" checked>
+                  <label class="form-check-label">Resource Telemetry</label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="d-grid gap-2 mt-4">
+            <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+              <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+              <span id="submitLabel">Submit Enrollment Request</span>
+            </button>
+          </div>
+        </form>
+
+        <div id="resultAlert" class="alert mt-3 d-none" role="alert"></div>
+
+        <hr class="my-4">
+
+        <div class="text-center text-muted small">
+          <form id="statusForm" class="input-group input-group-sm mb-3">
+            <input name="token" class="form-control" aria-label="Request token" placeholder="Request token" value="{{ request.query_params.get('token', '') }}" required>
+            <button class="btn btn-outline-secondary" type="submit">Check status</button>
+          </form>
+          <p>Once approved, the status page shows the one-line install command for this endpoint's OS
+             (PowerShell for Windows, shell script for Linux).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+
+  function init() {
+    document.getElementById("statusForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      const token = new FormData(e.target).get("token").trim();
+      if (token) window.location.href = "/enroll/status/" + encodeURIComponent(token);
+    });
+    const form = document.getElementById("enrollForm");
+    const osSelect = document.getElementById("os_type");
+    if (osSelect && !osSelect.value && typeof navigator !== "undefined") {
+      const ua = (navigator.userAgent || "").toLowerCase();
+      if (ua.indexOf("windows") !== -1) osSelect.value = "windows";
+      else if (ua.indexOf("linux") !== -1 && ua.indexOf("android") === -1) osSelect.value = "linux";
+    }
+    const submitBtn = document.getElementById("submitBtn");
+    const resultAlert = document.getElementById("resultAlert");
+
+    function showAlert(message, type) {
+      resultAlert.textContent = message;
+      resultAlert.className = "alert alert-" + type + " mt-3";
+      resultAlert.classList.remove("d-none");
+    }
+
+    function hideAlert() {
+      resultAlert.classList.add("d-none");
+    }
+
+    function setLoading(loading) {
+      const label = document.getElementById("submitLabel");
+      submitBtn.disabled = loading;
+      submitBtn.querySelector(".spinner-border").classList.toggle("d-none", !loading);
+      if (label) {
+        label.textContent = loading ? "Submitting..." : "Submit Enrollment Request";
+      }
+    }
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      hideAlert();
+      setLoading(true);
+
+      const formData = new FormData(form);
+      const data = {
+        hostname: formData.get("hostname").trim(),
+        os_type: formData.get("os_type"),
+        docker_engine_flag: formData.has("docker_engine_flag") ? 1 : 0,
+        requested_features: {}
+      };
+
+      if (!data.hostname || !data.os_type) {
+        showAlert("Please fill in all required fields", "danger");
+        setLoading(false);
+        return;
+      }
+
+      // Collect requested features
+      form.querySelectorAll('input[name="collectors"]:checked').forEach(cb => {
+        data.requested_features[cb.value] = true;
+      });
+
+      try {
+        const response = await fetch("/api/v1/enroll/request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data)
+        });
+
+        // Server errors (e.g. a 500) come back as plain text, not JSON.
+        const text = await response.text();
+        let result = {};
+        try {
+          result = JSON.parse(text);
+        } catch (parseErr) {
+          result = {};
+        }
+
+        if (!response.ok) {
+          const detail = typeof result.detail === "string" ? result.detail
+            : (text && text.length < 200 ? text : "HTTP " + response.status);
+          throw new Error(detail + " - please retry in a moment");
+        }
+
+        // Store request token in sessionStorage for status page redirect
+        sessionStorage.setItem("enrollment_request_token", result.request_token);
+        sessionStorage.setItem("enrollment_enrollment_token", result.enrollment_token);
+
+        showAlert(
+          "Request submitted successfully! Request token: " + result.request_token +
+          " - save it to check the status later. Redirecting to status page...",
+          "success"
+        );
+
+        // Redirect to status page after 2 seconds
+        setTimeout(() => {
+          window.location.href = "/enroll/status/" + encodeURIComponent(result.request_token);
+        }, 2000);
+
+      } catch (err) {
+        showAlert("Error: " + err.message, "danger");
+        setLoading(false);
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
+{% endblock %}

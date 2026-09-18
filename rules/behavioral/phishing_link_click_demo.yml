@@ -1,0 +1,27 @@
+title: Phishing Link Click / Malicious Attachment Opened (Demo)
+id: 9fe63f8e-2afc-502c-913a-a96b88d66501
+status: test
+description: >
+    Detects the harmless demo marker representing a user clicking a link in a
+    phishing email or opening a malicious email attachment. Cross-platform:
+    matches the marker in the process command line on Windows and Linux.
+x-ator-cause: user_clicked_phishing_link_or_opened_attachment
+x-ator-investigation-hint: >
+    Root cause is user execution of attacker-delivered content. Pivot from the
+    flagged process to its parent (mail client / browser), then correlate the
+    delivery email, the source URL/attachment, proxy + DNS logs, and the user
+    session to establish who received it, when it was opened, and from where.
+logsource:
+    category: process_creation
+detection:
+    selection:
+        CommandLine|contains:
+            - 'ATOR_DEMO_PHISHING_LINK_CLICKED'
+            - 'ATOR_DEMO_EMAIL_ATTACHMENT_OPENED'
+    condition: selection
+tags:
+    - attack.initial-access
+    - attack.execution
+    - attack.t1566.002
+    - attack.t1204.001
+level: high
