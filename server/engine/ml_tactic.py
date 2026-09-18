@@ -42,8 +42,40 @@ OTHER_CLASS = "other"
 
 # How many suggestions to attach to a detection.
 TOP_N_SUGGESTIONS = 2
-# Below this probability a suggestion is not worth showing an analyst.
-MIN_SUGGESTION_PROBABILITY = float(os.environ.get("ATOR_ML_TACTIC_MIN_PROB", "0.25"))
+
+# Below this probability a suggestion is not shown. 0.80 is not a guess - it is where the
+# measurement says the component becomes useful:
+#
+#   threshold   coverage   accuracy (all classes)   precision (well-supported classes)
+#      none       100%          57.1%                        65.9%
+#      0.70        55%          67.3%                        75.0%
+#      0.80        43%          71.6%                        77.6%
+#
+# At Phase 5, with 185 labels, the same curve topped out at 59.5% and the component was not
+# shipped at all. Phase 7a's label recovery moved it enough to be worth showing - but only
+# above this threshold, and only as a hint that displays its own probability.
+MIN_SUGGESTION_PROBABILITY = float(os.environ.get("ATOR_ML_TACTIC_MIN_PROB", "0.80"))
+
+# A class needs this many training examples before its predictions are shown. Distinct from
+# MIN_EXAMPLES_PER_CLASS, which decides what can be *learned*: a class can be learnable
+# (>=10) yet still too thinly supported to put in front of an analyst. Measured per-class F1:
+# defense_evasion 0.67 (n=81), lateral_movement 0.69 (n=50), credential_access 0.60 (n=38),
+# persistence 0.00 (n=10), privilege_escalation low (n=10).
+MIN_SUPPORT_TO_SUGGEST = int(os.environ.get("ATOR_ML_TACTIC_MIN_SUPPORT", "30"))
+
+# Minimum Component B confidence before a tactic is suggested at all.
+#
+# THIS GUARD EXISTS BECAUSE OF AN OBSERVED FAILURE, not as a precaution.
+#
+# The tactic model is trained on malicious processes only - the question it answers is "which
+# tactic is this?", not "is this an attack?". Applied to a benign process it is out of
+# distribution, has no "none of the above" class, and confidently picks the nearest one. On
+# the live workstation it labelled `chrome.exe` and `System Idle Process` as
+# `lateral_movement` with probability **1.0**.
+#
+# So a tactic is only suggested where Component B already believes the process is malicious.
+# The classifier answering "is this an attack?" gates the one answering "which kind?".
+MIN_CONFIDENCE_TO_SUGGEST = float(os.environ.get("ATOR_ML_TACTIC_MIN_CONFIDENCE", "0.50"))
 
 
 def collapse_rare_classes(tactics, min_examples: int = MIN_EXAMPLES_PER_CLASS):
@@ -72,6 +104,8 @@ class TacticModel:
         self.feature_names: list[str] = []
         self.used_features: list[str] = []
         self.classes_: list[str] = []
+        self.class_support_: dict = {}
+        self.suggestable_: list[str] = []
 
     @staticmethod
     def _usable_columns(X: pd.DataFrame) -> list[str]:
@@ -107,6 +141,13 @@ class TacticModel:
         ])
         self.pipeline.fit(X[self.used_features], y)
         self.classes_ = list(self.pipeline.named_steps["clf"].classes_)
+        # Training support per class, so suggest() can withhold thinly-supported classes.
+        counts = pd.Series(y).value_counts()
+        self.class_support_ = {str(k): int(v) for k, v in counts.items()}
+        self.suggestable_ = sorted(
+            name for name in self.classes_
+            if name != OTHER_CLASS
+            and self.class_support_.get(str(name), 0) >= MIN_SUPPORT_TO_SUGGEST)
         return self
 
     def _check_ready(self, X: pd.DataFrame) -> None:
@@ -129,13 +170,15 @@ class TacticModel:
         `min_probability` yields an empty list - no suggestion is better than a misleading one.
         """
         probabilities = self.predict_proba(X)
+        allowed = set(getattr(self, "suggestable_", None)
+                      or [c for c in self.classes_ if c != OTHER_CLASS])
         out = []
         for row in probabilities:
             ranked = sorted(zip(self.classes_, row), key=lambda kv: kv[1], reverse=True)
             suggestions = [
                 {"tactic": name, "probability": round(float(p), 4)}
                 for name, p in ranked[:top_n + 1]
-                if name != OTHER_CLASS and p >= min_probability
+                if name in allowed and p >= min_probability
             ]
             out.append(suggestions[:top_n])
         return out
@@ -143,7 +186,9 @@ class TacticModel:
     def to_payload(self) -> dict:
         return {"pipeline": self.pipeline, "feature_names": self.feature_names,
                 "used_features": self.used_features, "classes": self.classes_,
-                "seed": self.seed, "min_examples": self.min_examples}
+                "seed": self.seed, "min_examples": self.min_examples,
+                "class_support": getattr(self, "class_support_", {}),
+                "suggestable": getattr(self, "suggestable_", [])}
 
     @classmethod
     def from_payload(cls, payload: dict) -> "TacticModel":
@@ -153,4 +198,6 @@ class TacticModel:
         model.feature_names = list(payload["feature_names"])
         model.used_features = list(payload.get("used_features") or payload["feature_names"])
         model.classes_ = list(payload["classes"])
+        model.class_support_ = payload.get("class_support") or {}
+        model.suggestable_ = list(payload.get("suggestable") or [])
         return model

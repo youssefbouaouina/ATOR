@@ -90,9 +90,16 @@ def fig_model_vs_baselines(report: dict) -> str:
 
 def fig_feature_group_ablation(report: dict) -> str:
     """Leave-one-feature-group-out: which evidence actually carries the result."""
-    full = report["results"].get("ablation:all_features(98)")
+    # Looked up by prefix, not by an exact key: the name embeds the feature count, which
+    # changes whenever the spec does (98 -> 113 when the T3 tier was added, 113 -> 111 when
+    # Phase 8 deleted three burst features). The count is then read back OUT of the key for
+    # the chart title, because a hard-coded "all 98 features" caption silently became a lie
+    # the first time the spec moved.
+    full_key, full = next(((k, v) for k, v in report["results"].items()
+                           if k.startswith("ablation:all_features")), (None, None))
     if not full:
         return ""
+    n_features = full_key.partition("(")[2].rstrip(")") or "all"
     base = full["metrics"]["pr_auc"]
     rows = []
     for name, entry in report["results"].items():
@@ -111,7 +118,7 @@ def fig_feature_group_ablation(report: dict) -> str:
     ax.set_yticks(np.arange(len(labels)), labels, fontsize=9)
     ax.set_xlabel("change in PR-AUC when the group is removed")
     ax.set_title("Which feature families carry the result\n"
-                 f"(baseline: all 98 features, PR-AUC {base:.3f})", fontsize=10)
+                 f"(baseline: all {n_features} features, PR-AUC {base:.3f})", fontsize=10)
     ax.grid(axis="x", alpha=0.25)
     ax.set_axisbelow(True)
     for i, d in enumerate(deltas):

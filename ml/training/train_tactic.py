@@ -36,6 +36,78 @@ def _positives_only(dataset: A.Dataset) -> A.Dataset:
     return dataset.subset(dataset.y == A.LABEL_MALICIOUS)
 
 
+def _gating_analysis(y_true, y_pred, confidences, report_dict) -> dict:
+    """Measure what the deployment gates actually buy.
+
+    `ml_tactic` only surfaces a suggestion when the probability clears
+    MIN_SUGGESTION_PROBABILITY and the tactic has MIN_SUPPORT_TO_SUGGEST training examples.
+    Both numbers are claimed in the UI ("about 78% precision at this threshold"), so both are
+    computed here rather than asserted: a threshold defended by a number in a report is a
+    decision, a threshold defended by nothing is a guess.
+
+    Precision, not accuracy, is the metric for a *gate*: the question an analyst cares about
+    is "when it does speak, how often is it right?", and coverage is the price paid for that.
+    """
+    well_supported = {
+        name for name, entry in report_dict.items()
+        if isinstance(entry, dict) and name not in ("macro avg", "weighted avg", "accuracy")
+        and int(entry.get("support", 0)) >= ml_tactic.MIN_SUPPORT_TO_SUGGEST
+    }
+    correct = y_true == y_pred
+    shown_class = np.isin(y_pred, list(well_supported))
+    total = len(y_true)
+
+    rows = []
+    for threshold in (0.0, 0.5, 0.6, 0.7, 0.8, 0.9):
+        above = confidences >= threshold
+        gated = above & shown_class
+        rows.append({
+            "min_probability": threshold,
+            "n_suggested": int(above.sum()),
+            "coverage": round(float(above.mean()), 4),
+            "precision": round(float(correct[above].mean()), 4) if above.any() else None,
+            "with_support_gate": {
+                "n_suggested": int(gated.sum()),
+                "coverage": round(float(gated.sum() / total), 4),
+                "precision": round(float(correct[gated].mean()), 4) if gated.any() else None,
+            },
+        })
+
+    print("\ngate analysis - precision when the model is allowed to speak:")
+    header = ("  min p", "   shown", "  coverage", "  precision",
+              "  +support", "  precision")
+    print("".join(f"{h:>11s}" for h in header))
+    for r in rows:
+        g = r["with_support_gate"]
+        print(f"{r['min_probability']:>11.2f}{r['n_suggested']:>11d}"
+              f"{r['coverage']:>11.1%}{(r['precision'] or 0):>11.1%}"
+              f"{g['n_suggested']:>11d}{(g['precision'] or 0):>11.1%}")
+
+    shipped = next(r for r in rows
+                   if abs(r["min_probability"] - ml_tactic.MIN_SUGGESTION_PROBABILITY) < 1e-9)
+    point = shipped["with_support_gate"]
+    print(f"\nSHIPPED gate: p >= {ml_tactic.MIN_SUGGESTION_PROBABILITY} and support >= "
+          f"{ml_tactic.MIN_SUPPORT_TO_SUGGEST} -> {point['precision']:.1%} precision at "
+          f"{point['coverage']:.1%} coverage ({point['n_suggested']} of {total} attacks).")
+    print(f"The third gate - Component B confidence >= "
+          f"{ml_tactic.MIN_CONFIDENCE_TO_SUGGEST} - is applied at serve time and is NOT "
+          f"measurable here: this population is attacks only, and that gate exists to stop "
+          f"the model answering confidently about BENIGN processes it never trained on.")
+
+    return {
+        "note": "precision/coverage of the deployment gates over CV predictions, attacks "
+                "only. The serve-time Component B confidence gate is not represented: it "
+                "exists for benign inputs, which this population does not contain.",
+        "well_supported_classes": sorted(well_supported),
+        "min_support_to_suggest": ml_tactic.MIN_SUPPORT_TO_SUGGEST,
+        "shipped_min_probability": ml_tactic.MIN_SUGGESTION_PROBABILITY,
+        "shipped_min_component_b_confidence": ml_tactic.MIN_CONFIDENCE_TO_SUGGEST,
+        "by_threshold": rows,
+        "shipped_operating_point": point,
+    }
+
+
+
 def evaluate(dataset: A.Dataset, n_splits: int = 5, tier: str = mlf.TIER_T1) -> dict:
     positives = _positives_only(dataset.subset(H.corpus_eval_mask(dataset)))
     raw_counts = Counter(str(t) for t in positives.tactics)
@@ -104,6 +176,8 @@ def evaluate(dataset: A.Dataset, n_splits: int = 5, tier: str = mlf.TIER_T1) -> 
         print(f"  {name:22s} support={support:>4d}  f1={report_dict[name]['f1-score']:.3f}"
               f"   [{verdict}]")
 
+    gating = _gating_analysis(y_true, y_pred, confidences[scored], report_dict)
+
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "feature_spec_sha256": mlf.feature_spec_sha256(),
@@ -121,6 +195,7 @@ def evaluate(dataset: A.Dataset, n_splits: int = 5, tier: str = mlf.TIER_T1) -> 
         "per_class": {c: {k: round(v, 4) if isinstance(v, float) else v
                           for k, v in report_dict[c].items()} for c in class_order},
         "confusion_matrix": {"labels": class_order, "matrix": matrix.tolist()},
+        "gating": gating,
         "note": "evaluated by grouped CV only - the held-out split contains just 3 of 8 "
                 "tactics, so per-class numbers from it would be meaningless",
     }

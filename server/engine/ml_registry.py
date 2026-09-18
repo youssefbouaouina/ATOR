@@ -204,9 +204,26 @@ def describe(conn) -> dict:
     if status.available:
         from server.engine import ml_features as mlf
         out["feature_spec_sha256"] = mlf.feature_spec_sha256()
+        # The tactic hint's precision is quoted to the analyst in three places in the UI. It
+        # was hard-coded at 78% and became wrong the next time the model was retrained, which
+        # is the same class of staleness this layer's version guard exists to prevent. Read it
+        # from the artefact the model actually shipped with, or say nothing.
+        tactic = load_artefact("tactic", TIERS[0])
+        gate = ((tactic or {}).get("metrics") or {}).get("gating") or {}
+        point = gate.get("shipped_operating_point") or {}
+        if point.get("precision") is not None:
+            out["tactic_gate"] = {
+                "precision": point["precision"],
+                "precision_pct": round(point["precision"] * 100),
+                "coverage_pct": round((point.get("coverage") or 0) * 100),
+                "min_probability": gate.get("shipped_min_probability"),
+                "min_support": gate.get("min_support_to_suggest"),
+                "min_confidence": gate.get("shipped_min_component_b_confidence"),
+            }
         out["feature_counts"] = {"total": len(mlf.FEATURE_NAMES),
                                  "t1": len(mlf.T1_FEATURES),
-                                 "t2": len(mlf.T2_FEATURES)}
+                                 "t2": len(mlf.T2_FEATURES),
+                                 "t3": len(mlf.T3_FEATURES)}
     for model_type in MODEL_TYPES:
         for tier in TIERS:
             path = model_path(model_type, tier)

@@ -227,7 +227,7 @@ def load(train_db: str = DEFAULT_TRAIN_DB, live_db: str | None = DEFAULT_LIVE_DB
     )
 
 
-def materialise(dataset: Dataset, train_mask=None, tier: str = mlf.TIER_T2):
+def materialise(dataset: Dataset, train_mask=None, tier: str = mlf.TIER_T3):
     """Fit rarity statistics on `train_mask` rows only, then transform everything.
 
     Pass the training-fold mask, never None, inside a CV loop. `train_mask=None` fits on all

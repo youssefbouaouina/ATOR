@@ -69,7 +69,7 @@ def populated_db(tmp_db, seeded_host):
     return {"db": tmp_db, "host_id": host_id}
 
 
-def _matrix(db_path, tier=mlf.TIER_T2, with_stats=True):
+def _matrix(db_path, tier=mlf.TIER_T3, with_stats=True):
     conn = database.connect(db_path)
     try:
         frame = mlf.extract_process_frame(conn)
@@ -87,12 +87,31 @@ class TestFeatureSpec:
 
     def test_every_feature_has_a_valid_tier_and_description(self):
         for fd in mlf.FEATURE_SPEC:
-            assert fd.tier in (mlf.TIER_T1, mlf.TIER_T2), fd.name
+            assert fd.tier in (mlf.TIER_T1, mlf.TIER_T2, mlf.TIER_T3), fd.name
             assert fd.description.strip(), fd.name
 
     def test_tier_partition_is_complete(self):
-        assert set(mlf.T1_FEATURES) | set(mlf.T2_FEATURES) == set(mlf.FEATURE_NAMES)
+        assert (set(mlf.T1_FEATURES) | set(mlf.T2_FEATURES) | set(mlf.T3_FEATURES)
+                == set(mlf.FEATURE_NAMES))
         assert not set(mlf.T1_FEATURES) & set(mlf.T2_FEATURES)
+        assert not set(mlf.T2_FEATURES) & set(mlf.T3_FEATURES)
+        assert not set(mlf.T1_FEATURES) & set(mlf.T3_FEATURES)
+
+    def test_tiers_are_cumulative(self):
+        """t1 subset of t2 subset of t3 - a host can only use a tier it has data for."""
+        t1 = set(mlf.features_for_tier(mlf.TIER_T1))
+        t2 = set(mlf.features_for_tier(mlf.TIER_T2))
+        t3 = set(mlf.features_for_tier(mlf.TIER_T3))
+        assert t1 < t2 < t3
+        assert t3 == set(mlf.FEATURE_NAMES)
+
+    def test_unknown_tier_is_rejected(self):
+        with pytest.raises(ValueError):
+            mlf.tiers_up_to("t9")
+
+    def test_every_t3_feature_is_named_psh(self):
+        for name in mlf.T3_FEATURES:
+            assert name.startswith("psh_"), name
 
     def test_spec_hash_is_stable_and_sensitive(self):
         first = mlf.feature_spec_sha256()
@@ -129,7 +148,9 @@ class TestProductionSchemaDiscipline:
 
     def test_reads_only_production_tables(self):
         source = open(mlf.__file__, encoding="utf-8").read()
-        for sql in ("_PROCESS_SQL", "_CONN_SQL", "_SYSMON_SQL"):
+        # `_PROCESS_SQL` became `_process_sql(conn)` in Phase 8, so that the optional
+        # `create_time_utc` column is named only when the database actually has it.
+        for sql in ("_process_sql", "_CONN_SQL", "_SYSMON_SQL"):
             assert sql in source
         # The three FROM targets must all be production tables.
         assert "FROM raw_processes" in source
@@ -307,9 +328,24 @@ class TestTransformOutput:
 
     def test_temporal_features(self, populated_db):
         X, _ = _matrix(populated_db["db"])
-        assert (X["hour_of_day"] == 22).all()
+        # hour_of_day was removed in Phase 7b.1: PSI 8.67 between corpus and live, because
+        # it encoded when the 2020 lab captures ran rather than anything behavioural.
+        assert "hour_of_day" not in X.columns
         assert (X["is_off_hours"] == 1.0).all()
         assert (X["is_weekend"] == 1.0).all()      # 2026-03-01 is a Sunday
+
+    def test_burst_features_are_nan_without_a_process_start_time(self, populated_db):
+        """No `create_time_utc`, no timing features - and specifically not 0.
+
+        Rewritten in Phase 8. The original version asserted NaN when a collection had a
+        single *collection* timestamp, which is how the features were defined then and is
+        exactly why they were NaN on every live host: a psutil sweep always has one. The
+        condition that matters is whether each process reported its own start time.
+        """
+        X, _ = _matrix(populated_db["db"])
+        # the shared fixture inserts no create_time_utc
+        for col in ("procs_within_5s", "seconds_since_parent_start"):
+            assert X[col].isna().all(), col
 
 
 class TestMissingIsNotZero:

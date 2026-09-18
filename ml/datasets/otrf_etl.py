@@ -125,6 +125,48 @@ SYSMON_FIELD_ALLOWLIST: dict[int, tuple[str, ...]] = {
 _SYSMON_SKIP_IN_LOGS = frozenset({EID_NETWORK_CONNECT})
 
 # ---------------------------------------------------------------------------
+# PowerShell channel.
+#
+# ExecutionProcessID means DIFFERENT THINGS on different channels, and getting this wrong
+# silently corrupts every row:
+#
+#   * On a **Sysmon** event it is the pid of the process that *wrote* the event - Sysmon's
+#     own service, constant per capture (3172 in the observed data). Using it as the subject
+#     process would be nonsense. This is documented in _backfill_pids().
+#   * On a **PowerShell** event the event is written BY the powershell.exe host itself, so it
+#     IS the subject process. Measured: 7 distinct values across sampled captures, including
+#     pid 1648 - the Empire agent identified during Phase 1 labelling.
+#
+# Which events are actually usable:
+#   EID 4103  module/pipeline logging. Carries ExecutionProcessID, ContextInfo (the host's
+#             full command line) and Payload (the DEOBFUSCATED pipeline - e.g. Empire's RC4
+#             key schedule appears here in plaintext even when the command line is base64).
+#             35,753 events. This is the useful one.
+#   EID 4104  script-block text, but NO ExecutionProcessID at all - only ScriptBlockId, which
+#             links to 4105/4106 and to nothing that identifies a process. Stored for
+#             completeness; it cannot currently be attributed to a process row.
+#   EID 400/600/800  ExecutionProcessID is 0. Unattributable; kept out of the features.
+POWERSHELL_CHANNELS = frozenset({"Windows PowerShell",
+                                 "Microsoft-Windows-PowerShell/Operational"})
+SOURCE_POWERSHELL = "powershell"
+
+POWERSHELL_FIELD_ALLOWLIST: dict[int, tuple[str, ...]] = {
+    4103: ("ExecutionProcessID", "ContextInfo", "Payload", "EventTime"),
+    4104: ("ScriptBlockText", "Path", "ScriptBlockId", "MessageNumber", "MessageTotal"),
+    4105: ("ScriptBlockId", "RunspaceId"),
+    4106: ("ScriptBlockId", "RunspaceId"),
+    800: ("ExecutionProcessID",),
+    400: ("ExecutionProcessID",),
+    600: ("ExecutionProcessID",),
+}
+
+# Payload and ContextInfo can reach 25 KB. They are truncated to a bounded prefix so the
+# training database stays a sane size; the corresponding features saturate at the same limit
+# on both sides, so a capped corpus and an uncapped production log produce the same number.
+PS_PAYLOAD_CAP = 1500
+PS_CONTEXT_CAP = 600
+
+# ---------------------------------------------------------------------------
 # Sensor profile: which Sysmon events this deployment actually collects.
 #
 # THIS IS THE MOST IMPORTANT FIDELITY CONTROL IN THE ETL.
@@ -224,7 +266,9 @@ def _extended_event_kept(event: dict, eid: int | None) -> bool:
 # frames indicating injected code - appears in the leading frames.
 _FIELD_CAP_DEFAULT = 512
 _FIELD_CAPS = {"CallTrace": 256, "ParentCommandLine": 1024, "CommandLine": 1024,
-               "Query": 512, "QueryResults": 256}
+               "Query": 512, "QueryResults": 256,
+               "Payload": PS_PAYLOAD_CAP, "ContextInfo": PS_CONTEXT_CAP,
+               "ScriptBlockText": PS_PAYLOAD_CAP}
 
 # Registry paths that constitute persistence. Used to populate raw_persistence, which in
 # production is a *snapshot* of persistence mechanisms - here we reconstruct it from the
@@ -366,15 +410,19 @@ def _cap(key: str, value):
     return value if len(value) <= limit else value[:limit]
 
 
-def _event_data_fields(event: dict, eid: int | None, is_sysmon: bool) -> dict:
+def _event_data_fields(event: dict, eid: int | None, is_sysmon: bool,
+                       is_powershell: bool = False) -> dict:
     """The event's own EventData fields, shaped like the agent's payload['fields'].
 
-    Sysmon events are restricted to SYSMON_FIELD_ALLOWLIST (see its docstring). Other
-    channels keep whatever EventData they carry, capped at MAX_EVENT_DATA_FIELDS to match
-    the agent.
+    Sysmon and PowerShell events are restricted to their per-EID allowlists (see those
+    dicts' docstrings). Other channels keep whatever EventData they carry, capped at
+    MAX_EVENT_DATA_FIELDS to match the agent.
     """
     if is_sysmon and eid in SYSMON_FIELD_ALLOWLIST:
         allowed = SYSMON_FIELD_ALLOWLIST[eid]
+        return {k: _cap(k, event[k]) for k in allowed if k in event and event[k] is not None}
+    if is_powershell and eid in POWERSHELL_FIELD_ALLOWLIST:
+        allowed = POWERSHELL_FIELD_ALLOWLIST[eid]
         return {k: _cap(k, event[k]) for k in allowed if k in event and event[k] is not None}
     fields = {}
     for key, value in event.items():
@@ -548,6 +596,7 @@ def import_capture(conn, capture: otrf.Capture, host_registry: _HostRegistry) ->
         host_id = host_registry.resolve(hostname, ts)
         hosts_seen.add(host_id)
         is_sysmon = channel == SYSMON_CHANNEL
+        is_powershell = channel in POWERSHELL_CHANNELS
 
         # ---- sensor policy, applied before anything is stored.
         # An event that scripts/sysmon-config.xml would have filtered out never reached the
@@ -580,7 +629,8 @@ def import_capture(conn, capture: otrf.Capture, host_registry: _HostRegistry) ->
                 log_source, eid, ts,
                 event.get("SourceName") or event.get("provider"),
                 hostname,
-                json.dumps({"fields": _event_data_fields(event, eid, is_sysmon),
+                json.dumps({"fields": _event_data_fields(event, eid, is_sysmon,
+                                                        is_powershell),
                             "log": channel, "corpus": capture_id}, default=str),
             ))
 
@@ -674,11 +724,18 @@ def import_capture(conn, capture: otrf.Capture, host_registry: _HostRegistry) ->
     # and written back into corpus_lineage. ~1.7k rows, so the cost is irrelevant.
     proc_ids: list[int] = []
     for values in procs:
+        # create_time_utc repeats collected_at_utc (index 2) for corpus rows, and that is the
+        # correct value rather than a convenience: every corpus process row is built from a
+        # Sysmon EID 1 record, whose UtcTime IS the moment the process started. On a live host
+        # the two columns differ - collected_at_utc is when the agent swept, create_time_utc is
+        # when the process launched - so writing it explicitly here is what makes the column
+        # mean the same thing on both sides. Before this existed, every timing feature was
+        # computable in training and NaN in production (docs/ML_PHASE8_PLAN.md).
         cur = conn.execute(
             """INSERT INTO raw_processes (host_id, collection_id, collected_at_utc, pid, ppid,
                                           name, cmdline, exe_path, sha256, username,
-                                          container_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""", values)
+                                          container_id, create_time_utc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", tuple(values) + (values[2],))
         proc_ids.append(cur.lastrowid)
     raw_id_by_guid = {
         guid: proc_ids[idx]

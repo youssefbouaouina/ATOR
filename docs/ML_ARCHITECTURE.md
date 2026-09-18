@@ -201,6 +201,20 @@ Field mapping for `raw_processes` (Sysmon EID 1 → ATOR), all fields verified p
 | `sha256` | parsed from `Hashes` (`SHA256=…`; may be absent → NULL) |
 | `username` | `User` |
 | `collected_at_utc` | `UtcTime` |
+| `create_time_utc` | `UtcTime` — the *same* value, deliberately (see below) |
+
+**`create_time_utc` was added in Phase 8 and the duplication above is the point.** In a corpus
+row the two columns hold the same value, because a Sysmon EID 1 record's `UtcTime` *is* the
+moment the process started. On a live host they differ completely: `collected_at_utc` is when
+the agent swept, identical across every process in that sweep, while `create_time_utc` comes
+from `psutil.Process.create_time()` per process. Timing features read `create_time_utc` only,
+with no fallback.
+
+Before this column existed, every timing feature was computable in training and **NaN on every
+production host**, while cross-validation reported them as the best thing in the feature set.
+That is the failure the whole "corpus into ATOR's own schema" strategy was supposed to prevent:
+converting the corpus guarantees the same *code* runs on both sides, but not that the same
+*columns are populated*. See `docs/ML_PHASE8_PLAN.md`.
 
 `raw_connections` (EID 3): `ProcessId`, `basename(Image)`→`process_name`, `SourceIp/Port`,
 `DestinationIp/Port`, `Protocol`. Every remaining event type is stored in `raw_logs` with

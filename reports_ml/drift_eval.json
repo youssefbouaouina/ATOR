@@ -1,0 +1,660 @@
+{
+  "feature_spec_sha256": "66b5b6f9e8ecde4332b1b3e94db2ea0108c61768f29b8f8dd20801f7c8e95db8",
+  "tier": "t1",
+  "reference_rows": 1716,
+  "current_rows": 296,
+  "summary": {
+    "features_compared": 81,
+    "counts": {
+      "stable": 30,
+      "moderate": 6,
+      "shifted": 45
+    },
+    "retrain_recommended": true,
+    "worst": [
+      {
+        "feature": "cmdline_digit_ratio",
+        "psi": 8.5748,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_entropy",
+        "psi": 8.2026,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_len",
+        "psi": 8.1549,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_upper_ratio",
+        "psi": 7.5273,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_special_ratio",
+        "psi": 7.4294,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_has_encoded_flag",
+        "psi": 7.23,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_has_hidden_window",
+        "psi": 7.23,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_has_policy_bypass",
+        "psi": 7.23,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_has_download_verb",
+        "psi": 7.23,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      },
+      {
+        "feature": "cmdline_url_count",
+        "psi": 7.23,
+        "verdict": "shifted",
+        "reference_missing_pct": 0.0,
+        "current_missing_pct": 52.03
+      }
+    ],
+    "thresholds": {
+      "stable_below": 0.1,
+      "shifted_above": 0.25
+    }
+  },
+  "features": [
+    {
+      "feature": "cmdline_digit_ratio",
+      "psi": 8.5748,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_entropy",
+      "psi": 8.2026,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_len",
+      "psi": 8.1549,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_upper_ratio",
+      "psi": 7.5273,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_special_ratio",
+      "psi": 7.4294,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_has_encoded_flag",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_has_hidden_window",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_has_policy_bypass",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_has_download_verb",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_url_count",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_ip_literal_count",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_env_var_count",
+      "psi": 7.23,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "parent_cmdline_len",
+      "psi": 6.0449,
+      "verdict": "shifted",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 66.89
+    },
+    {
+      "feature": "parent_cmdline_entropy",
+      "psi": 5.4682,
+      "verdict": "shifted",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 66.89
+    },
+    {
+      "feature": "parent_child_pair_rarity",
+      "psi": 4.9922,
+      "verdict": "shifted",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.73
+    },
+    {
+      "feature": "sibling_count",
+      "psi": 4.1029,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.04,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "procs_within_60s",
+      "psi": 3.9442,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.68
+    },
+    {
+      "feature": "process_name_rarity",
+      "psi": 3.6847,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "child_count",
+      "psi": 2.6741,
+      "verdict": "shifted",
+      "reference_missing_pct": 19.64,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "is_orphan",
+      "psi": 2.6281,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.04,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "cmdline_max_token_len",
+      "psi": 2.1236,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "tree_depth",
+      "psi": 1.7914,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "seconds_since_parent_start",
+      "psi": 1.7703,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.5,
+      "current_missing_pct": 6.42
+    },
+    {
+      "feature": "parent_name_rarity",
+      "psi": 1.4086,
+      "verdict": "shifted",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "parent_cmdline_has_encoded_flag",
+      "psi": 1.2478,
+      "verdict": "shifted",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 66.89
+    },
+    {
+      "feature": "cmdline_token_count",
+      "psi": 1.1772,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "procs_within_5s",
+      "psi": 0.9685,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.68
+    },
+    {
+      "feature": "conn_external_ratio",
+      "psi": 0.6641,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_suspicious_port_count",
+      "psi": 0.6641,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_udp_ratio",
+      "psi": 0.6641,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_distinct_remote_ips",
+      "psi": 0.6296,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_distinct_remote_ports",
+      "psi": 0.6197,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_external_count",
+      "psi": 0.6161,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_count",
+      "psi": 0.5804,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_max_remote_port",
+      "psi": 0.5586,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_min_remote_port",
+      "psi": 0.5445,
+      "verdict": "shifted",
+      "reference_missing_pct": 94.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "cmdline_has_pipe_to_shell",
+      "psi": 0.5203,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_has_ads",
+      "psi": 0.5203,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "cmdline_escape_char_count",
+      "psi": 0.5203,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 52.03
+    },
+    {
+      "feature": "path_depth",
+      "psi": 0.5125,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 1.01
+    },
+    {
+      "feature": "exe_name_len",
+      "psi": 0.4721,
+      "verdict": "shifted",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "user_is_system",
+      "psi": 0.4173,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.04,
+      "current_missing_pct": 51.35
+    },
+    {
+      "feature": "user_is_service_account",
+      "psi": 0.4173,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.04,
+      "current_missing_pct": 51.35
+    },
+    {
+      "feature": "user_is_admin_like",
+      "psi": 0.4173,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.04,
+      "current_missing_pct": 51.35
+    },
+    {
+      "feature": "user_is_domain",
+      "psi": 0.4173,
+      "verdict": "shifted",
+      "reference_missing_pct": 21.04,
+      "current_missing_pct": 51.35
+    },
+    {
+      "feature": "parent_is_lolbin",
+      "psi": 0.1487,
+      "verdict": "moderate",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "parent_is_shell",
+      "psi": 0.1487,
+      "verdict": "moderate",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "parent_is_office",
+      "psi": 0.1487,
+      "verdict": "moderate",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "parent_is_browser",
+      "psi": 0.1487,
+      "verdict": "moderate",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "parent_is_service_host",
+      "psi": 0.1487,
+      "verdict": "moderate",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "parent_is_explorer",
+      "psi": 0.1487,
+      "verdict": "moderate",
+      "reference_missing_pct": 15.27,
+      "current_missing_pct": 4.39
+    },
+    {
+      "feature": "exe_name_entropy",
+      "psi": 0.0747,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "cmdline_longest_b64_run",
+      "psi": 0.0676,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "exe_is_lolbin",
+      "psi": 0.0275,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "exe_is_script_host",
+      "psi": 0.0275,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "exe_masquerades_system",
+      "psi": 0.0275,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "name_path_mismatch",
+      "psi": 0.0101,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 1.01
+    },
+    {
+      "feature": "exe_name_has_space",
+      "psi": 0.0034,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "exe_name_double_ext",
+      "psi": 0.0034,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.34
+    },
+    {
+      "feature": "cmdline_present",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "sha256_present",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_system32",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_windows_other",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_program_files",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_programdata",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_appdata",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_temp",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_downloads",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_user_other",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_unc",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_root_drive",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_other",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "path_cat_missing",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "parent_known",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "user_present",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "conn_available",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "conn_status_available",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "conn_listen_count",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 100.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "conn_established_count",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 100.0,
+      "current_missing_pct": 100.0
+    },
+    {
+      "feature": "is_off_hours",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    },
+    {
+      "feature": "is_weekend",
+      "psi": 0.0,
+      "verdict": "stable",
+      "reference_missing_pct": 0.0,
+      "current_missing_pct": 0.0
+    }
+  ]
+}

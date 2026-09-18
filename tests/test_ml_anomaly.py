@@ -445,9 +445,20 @@ class TestFeatureGroups:
         assert covered <= set(mlf.FEATURE_NAMES)
 
     def test_excluding_a_group_removes_exactly_it(self):
-        subset = mlf.features_excluding("tree", tier=mlf.TIER_T2)
-        assert set(mlf.FEATURE_GROUPS["tree"]).isdisjoint(subset)
-        assert len(subset) == len(mlf.FEATURE_NAMES) - len(mlf.FEATURE_GROUPS["tree"])
+        # Compare against the tier's own feature count, not the global one: tiers are
+        # cumulative, so T2 is a strict subset of the full spec.
+        for tier in (mlf.TIER_T1, mlf.TIER_T2, mlf.TIER_T3):
+            available = set(mlf.features_for_tier(tier))
+            removed = available & set(mlf.FEATURE_GROUPS["tree"])
+            subset = mlf.features_excluding("tree", tier=tier)
+            assert set(mlf.FEATURE_GROUPS["tree"]).isdisjoint(subset), tier
+            assert len(subset) == len(available) - len(removed), tier
+
+    def test_every_grouped_name_is_a_real_feature(self):
+        """A group naming a removed feature silently breaks features_excluding()."""
+        for group, names in mlf.FEATURE_GROUPS.items():
+            unknown = set(names) - set(mlf.FEATURE_NAMES)
+            assert not unknown, f"group {group!r} names non-existent feature(s): {unknown}"
 
     def test_excluding_several_groups(self):
         subset = mlf.features_excluding("tree", "conn", tier=mlf.TIER_T2)

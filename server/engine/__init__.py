@@ -158,6 +158,7 @@ def run_engine(conn=None, rules_dir=None):
         # as before. ML must never be able to break detection.
         ml_ids, ml_error = [], None
         ml_confidence, ml_risk_summary = {"scored": 0}, {}
+        ml_tactics = {"suggested": 0}
         try:
             from server.engine.ml_integration import (
                 insert_ml_detections, run_ml_anomaly_detection,
@@ -172,6 +173,11 @@ def run_engine(conn=None, rules_dir=None):
             # alike - so an analyst's queue is comparably ranked across sources.
             from server.engine.ml_integration import score_detection_confidence
             ml_confidence = score_detection_confidence(conn)
+
+            # Component C: tactic hints for ML findings that have no rule mapping. Gated at
+            # p>=0.80 and to well-supported classes; emits nothing when unsure.
+            from server.engine.ml_integration import suggest_tactics
+            ml_tactics = suggest_tactics(conn)
 
             # Host risk is deterministic aggregation over whatever detections now exist.
             from server.engine.ml_risk import update_all as update_risk_scores
@@ -191,6 +197,7 @@ def run_engine(conn=None, rules_dir=None):
         return {
             "ml_detections": len(ml_ids),
             "ml_confidence_scored": ml_confidence.get("scored", 0),
+            "ml_tactics_suggested": ml_tactics.get("suggested", 0),
             "ml_host_risk": ml_risk_summary,
             "ml_error": ml_error,
             "sigma_hits": len(sigma_hits),

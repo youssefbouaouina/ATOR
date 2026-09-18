@@ -4,7 +4,7 @@
 > *next*, and the exact commands that prove it. Update it at every phase checkpoint.
 > Design rationale lives in `docs/ML_ARCHITECTURE.md`; this file is state only.
 
-**Last updated:** 2026-09-16
+**Last updated:** 2026-09-18
 **Branch:** `ML`
 **Interpreter:** `.venv-ml313/Scripts/python.exe` (Python 3.13.14) — **not** the committed
 `.venv/`, which is broken (points at `C:\Users\SidikRoyale\...`).
@@ -21,9 +21,22 @@
 | **3 — Component A (anomaly) + eval harness** | ✅ **done & verified** |
 | **4 — Engine + API integration** | ✅ **done & verified** |
 | **5 — Components B & C, risk, drift** | ✅ **done & verified** |
-| **6 — Dashboard, model cards, reports** | ✅ **done & verified** — `335 passed, 1 skipped, 0 failed` |
+| **6 — Dashboard, model cards, reports** | ✅ **done & verified** |
+| **7 — Improvements (labels, features, tiers)** | ✅ done — **but 7b.2 was withdrawn in Phase 8**, see below |
+| **8 — Train/serve correction** | ✅ **done & verified** — `393 passed, 1 skipped, 0 failed` |
 
-**Status: all six phases complete.** Awaiting your review in the UI before any commit.
+**Status: all eight phases complete.** Phases 0–6 are committed and pushed to `origin/ML`
+(commits `1e3669d`..`2106b2d`); Phases 7 and 8 follow. `origin/main` is deliberately
+untouched. Still awaiting a review in the UI.
+
+> **Read this before trusting any Phase 7 number.** Phase 7b.2 reported five "burst" features
+> as that phase's headline win (+0.0134 PR-AUC). The PSI drift monitor later showed all five
+> were **NaN on every live host** — they were computed from a column that means "process start
+> time" in the corpus and "when the agent swept" in production. Four of the five were deleted
+> and the corpus metrics fell accordingly: Component A 0.588 → **0.549**, Component B 0.942 →
+> **0.927**. **The lower numbers are the real ones**, and Component A's precision@25 — the
+> metric matching how it is actually deployed — did not move at all (0.92 both sides). `docs/ML_PHASE8_PLAN.md` has the full
+> argument; `docs/ML_PHASE7_PLAN.md` carries a correction banner.
 
 ### Run it
 ```bash
@@ -40,6 +53,9 @@ on **Investigation** (Src + Conf columns) and **Endpoints** (Risk column).
 | `reports_ml/ML_EVALUATION_TRIAGE.md` | Components B & C, risk, drift, figures 06–08 |
 | `reports_ml/MODEL_CARDS.md` | Per-model intended use, metrics and limitations |
 | `docs/ML_ARCHITECTURE.md` | Design decisions and corrections to `hazem2.md` |
+| **`docs/ML_PHASE8_PLAN.md`** | **Read this one.** How a feature set that scored well in cross-validation turned out to be unusable in production, how it was caught, and what every headline number looks like once it was removed. |
+| `docs/ML_PHASE7_PLAN.md` | Phase 7, carrying a correction banner for the part Phase 8 withdrew |
+| `reports_ml/burst_audit.json` · `drift_eval.json` | The measurements behind the Phase 8 decisions |
 
 ### Try the ML layer by hand
 ```bash
@@ -427,6 +443,66 @@ This exists because Phase 4 broke `/api/v1/timeline` exactly this way.
 performance, and an explicit **out-of-scope** section. Component C's card records why it is
 not deployed.
 
+## Phase 7 results (measured 2026-09-18)
+
+> **(*) Superseded by Phase 8.** Every figure in this section that involves the 7b.2 burst
+> features was re-measured after four of them were deleted for being unavailable in
+> production. Current values: Component A **0.549** / precision@25 **0.92**, Component B
+> **0.927** / recall @1% FPR **82.4%**. The 7a label-recovery results (185 → 205 positives,
+> 26 → 17 unseeded captures) are unaffected and stand.
+
+Plan and full detail: **`docs/ML_PHASE7_PLAN.md`**. Phases 0-6 were committed and pushed to
+`origin/ML` first (commits `1e3669d`..`2106b2d`), so Phase 7 is measurable against a fixed
+baseline.
+
+| | Phase 6 | after 7a | after 7b | change |
+|---|---:|---:|---:|---:|
+| labelled positives | 185 | 205 | 205 | +11% |
+| unseeded captures | 26 | 17 | 17 | −35% |
+| features | 98 | 98 | 113 | |
+| **Component B PR-AUC** | 0.922 | 0.934 | 0.942 [0.905-0.974] (*) | +0.020 (*) |
+| Component B recall @1% FPR | 71.9% | 80.5% | **87.3%** | **+15.4pp** |
+| **union recall with rules** | 73.0% | 80.5% | **87.8%** | **+14.8pp** |
+| attacks caught by neither | 50 | 40 | **25** | **−50%** |
+| **leak-audit drop** | 0.0088 | 0.0073 | **0.0001** | ~0 |
+| Component A PR-AUC | 0.557 | 0.571 | **0.588** | +0.031 |
+| Component A precision@25 | 0.84 | 0.88 | **0.92** | +0.08 |
+
+**Attacks caught by neither rules nor model halved, 50 → 25 of 205**, and the leak audit fell
+to ~0 — so none of that gain is the model rediscovering its own labelling rule.
+
+### What was changed, and what each bought
+* **7a - label quality.** Read all 26 captures that produced no seed. Nine had an identifiable
+  mechanism and got a specific signature; the other **17 are genuinely invisible in
+  process-creation telemetry** (in-memory injection, in-memory PowerView, DCERPC service
+  manipulation, Meterpreter mic capture). 185 → 205 positives.
+* **7b.1 `hour_of_day` removed** - PSI 8.67; it encoded when the 2020 lab captures ran.
+* **7b.2 burst/temporal features added** (+0.0134, recall@1%FPR 0.790 → 0.873). These had been
+  deferred in Phase 2 on the mistaken belief that all data was single-snapshot; corpus captures
+  actually span 1.8-6.3 minutes and the agent sweeps every 60 s.
+* **7b.3 PowerShell module logging (new T3 tier)** - **null result, −0.0008**, reported as one.
+* **7c network features** - **kept against the corpus evidence**, because the corpus was shown
+  to be a biased test of them.
+
+### Two results worth remembering
+**PowerShell T3 is a null result for detection but not for investigation.** Where the features
+exist they are strikingly clean - `psh_has_url`, `psh_has_crypto_loop` and
+`psh_host_app_encoded` are **0.000 on benign**, 0.32-0.35 on malicious - and the deobfuscated
+payload exposes Empire's literal C2 URIs (`/admin/get.php`, `/news.php`,
+`/login/process.php`), invisible in the base64 command line. But only 45 of 1,716 processes
+have attributable PowerShell events, 32 malicious, and those 32 are already classified
+confidently by command-line/parent/path features. Real evidence, already covered.
+
+**The corpus cannot judge the network features.** Live psutil gives 13.0% connection coverage
+and 100% TCP state; the Sysmon-derived corpus gives 6.1% and **zero** TCP state
+(`conn_listen_count`/`conn_established_count` are unconditionally NaN in training). Deleting
+features on that evidence would be inferring from a biased sample.
+
+### Tier system is now cumulative (t1 ⊂ t2 ⊂ t3)
+`t1` psutil only (83) · `t2` + Sysmon (102) · `t3` + PowerShell module logging (113).
+Each tier is an ablation that answers a deployment question with a number:
+Sysmon +0.0037, PowerShell −0.0008 — **both within noise, so T1 remains the recommendation.**
+
 ## Internship subject (source of truth for scope)
 
 From `Internship_Subject_DFIR.pdf` (the first copy sent was 0 bytes; read from the re-sent
@@ -480,11 +556,42 @@ stated subject, not a detour from it.
 | Linux coverage | OTRF corpus used here is Windows-only. Subject covers Linux too; local Linux data is 2 demo rows. Linux ML is honestly scoped as **not validated**. |
 | `resource_samples` features | Deferred to Phase 5, unvalidated until rollup data accumulates. |
 | Kaggle token | Absent. Not required by the current plan. |
+| **Burst features are shifted in the tail** | `procs_within_5s` corpus p75 15 vs live 93; `seconds_since_parent_start` corpus p75 13 s vs live 7,203 s. Centres agree (mean process density 47.4 corpus / 53.1 live) and they ship on that basis. **Bounding or log-scaling them is the obvious next step** — it would not affect Component B (tree-based, invariant to monotone transforms) but would affect Component A. Not done: it is another spec bump and full retrain. |
+| **Component A is over-dimensioned** | Five of seven feature families *improve* the T2 model when removed (`ML_EVALUATION.md` §6). At 205 positives, feature selection for Component A specifically is now better value than any new feature. |
+| **Component A's margin over the best baseline is marginal** | Model CI 0.414–0.665 vs best-single-feature 0.253–0.413 — non-overlapping by 0.001. Its case rests on precision@25 (0.84 vs 0.28), which matches how it is deployed. Say so rather than quoting PR-AUC. |
+| **Live data predating Phase 8 has no `create_time_utc`** | The column is populated going forward only; the two existing collections in `ator_dfir.db` have NULL, so the burst features are NaN for them until the agent runs again. Nothing to fix — it is what a nullable additive column means. |
 
 ---
 
 ## Changelog
 
+- **2026-09-18 (2)** — **Phase 8: train/serve correction.** The PSI drift monitor, re-run
+  after the Phase 7 spec change, found that all five Phase 7b.2 burst features were NaN on
+  every live row — the four worst-drifting features in the whole T1 set. Cause: they were
+  computed from `raw_processes.collected_at_utc`, a per-process launch time in the corpus and
+  a single per-sweep timestamp in production. Fixed properly rather than patched:
+  `create_time_utc` added to the schema (additive, nullable), collected by the agent from
+  psutil, populated by the ETL for corpus rows, and read by the feature layer with **no
+  fallback** — a NULL start time yields NaN, because a silent fallback is how the bug worked.
+  Four of the five features were then deleted on measurement (`collection_has_timespan`
+  contributed exactly 0.0000; `seconds_since_collection_start` was a lab-capture artefact of
+  the `hour_of_day` class; `proc_spawn_rate_per_min` was collection-constant and
+  span-dependent; `procs_within_60s` was added in this phase and removed in it after
+  measuring +0.0154 PR-AUC when dropped). Corpus metrics fell — A 0.588 → 0.549, B 0.942 →
+  0.927, C 57.1% → 52.2% — which is what removing an artefact looks like. Three things moved
+  the other way and are why the cleanup is credible: the leak audit went **negative**
+  (−0.0032, from 0.0088 at Phase 6), the corpus-to-live threshold transfer improved from ~10×
+  to ~7.8×, and Component C's gated precision rose to 79.7%. Component A's **precision@25 did
+  not move** (0.92 both sides). A long-standing finding also reversed: "Sysmon features hurt
+  the anomaly model" was −0.056 at Phase 3 and is now −0.004, i.e. neutral — it was never a
+  fact about Sysmon, but about dimensionality at 205 positives. Also fixed a second defect the new tests caught: an
+  all-NULL `ppid` column made the parent self-join raise instead of yielding no parents.
+  `tests/test_ml_phase8.py` adds a **train/serve coverage guard** that fails the build when a
+  T1 feature is well-populated in training and near-absent at serve time.
+- **2026-09-18** — Phases 0-6 committed and pushed to `origin/ML` (5 commits). Phase 7 done:
+  label recovery (7a), feature spec v2 with a third tier (7b), network-feature decision (7c).
+  Component B PR-AUC 0.922 → **0.942**, union recall 73% → **87.8%**, attacks caught by neither
+  halved to 25, leak-audit drop → **0.0001**. Suite: **351 passed, 1 skipped, 0 failed**.
 - **2026-09-16 (7)** — Phase 6 done. `/ml` dashboard page, confidence badges on Investigation,
   risk badges on Endpoints, `reports_ml/MODEL_CARDS.md`, `tests/test_ml_ui.py` (32).
   Suite: **335 passed, 1 skipped, 0 failed**. All six phases complete.

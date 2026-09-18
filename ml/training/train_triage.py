@@ -42,7 +42,10 @@ def evaluate(dataset: A.Dataset, train_db: str, n_splits: int = 5) -> dict:
     ]
 
     tier_results = {}
-    for tier in (mlf.TIER_T1, mlf.TIER_T2):
+    # T3 is evaluated but never saved: it answers "what would enabling PowerShell module
+    # logging buy?", which is a deployment recommendation, and a recommendation needs a
+    # reproducible number rather than a remembered one.
+    for tier in (mlf.TIER_T1, mlf.TIER_T2, mlf.TIER_T3):
         res = H.grouped_cv(
             corpus,
             fit_score=ml_triage.fit_score_factory(),

@@ -261,7 +261,7 @@ def local_fp_report(dataset: A.Dataset, scores: np.ndarray,
     return out
 
 
-def grouped_cv(dataset: A.Dataset, fit_score, tier: str = mlf.TIER_T2,
+def grouped_cv(dataset: A.Dataset, fit_score, tier: str = mlf.TIER_T3,
                n_splits: int = 5, name: str = "model",
                benign_only_fit: bool = True,
                feature_subset: list[str] | None = None,
@@ -563,7 +563,7 @@ def sigma_complementarity(dataset: A.Dataset, sigma_scores: np.ndarray,
     }
 
 
-def ablation_study(dataset: A.Dataset, fit_score_factory, tier: str = mlf.TIER_T2,
+def ablation_study(dataset: A.Dataset, fit_score_factory, tier: str = mlf.TIER_T3,
                    n_splits: int = 5, eval_mask: np.ndarray | None = None,
                    groups_to_drop: tuple[str, ...] = ()) -> list[CvResult]:
     """Leave-one-feature-group-out, so a result attaches to a kind of evidence.
@@ -574,7 +574,7 @@ def ablation_study(dataset: A.Dataset, fit_score_factory, tier: str = mlf.TIER_T
     defensible headline.
     """
     results = []
-    full = mlf.FEATURE_NAMES if tier == mlf.TIER_T2 else mlf.T1_FEATURES
+    full = mlf.features_for_tier(tier)
     results.append(grouped_cv(dataset, fit_score_factory(), tier=tier, n_splits=n_splits,
                               name=f"ablation:all_features({len(full)})",
                               feature_subset=list(full), eval_mask=eval_mask))

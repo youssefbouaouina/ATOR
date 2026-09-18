@@ -89,15 +89,17 @@ def register_ui(target_app):
         anomalies = []
         for row in conn.execute(
             """SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
-                      d.detected_at_utc, d.anomaly_score, d.confidence_score, d.ml_explanation
+                      d.detected_at_utc, d.anomaly_score, d.confidence_score,
+                      d.ml_explanation, d.suggested_tactics
                FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
                WHERE d.rule_type = 'ml_anomaly'
                ORDER BY d.anomaly_score DESC, d.id DESC LIMIT 40"""):
             item = dict(row)
-            try:
-                item["ml_explanation"] = json.loads(item["ml_explanation"] or "{}")
-            except (json.JSONDecodeError, TypeError):
-                item["ml_explanation"] = {}
+            for field in ("ml_explanation", "suggested_tactics"):
+                try:
+                    item[field] = json.loads(item[field]) if item[field] else {}
+                except (json.JSONDecodeError, TypeError):
+                    item[field] = {}
             item["confidence_band"] = ml_triage.confidence_band(item.get("confidence_score"))
             anomalies.append(item)
 

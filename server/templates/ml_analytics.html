@@ -42,14 +42,18 @@
                 {% if not m.loadable %}
                   <span class="badge bg-danger" title="{{ m.note }}">refused</span>
                 {% elif m.model_type == 'tactic' %}
-                  {# Component C was measured and found insufficient (50.8% accuracy against a
-                     40.5% majority baseline). The artefact is kept so it can be re-evaluated
-                     when technique-level data exists, but it is not wired into the engine and
-                     its output is never shown - a hint wrong 4 times in 10 would mislead. #}
-                  <span class="badge bg-secondary"
-                        title="Measured at 50.8% accuracy vs a 40.5% majority baseline - not
-                               deployed. See reports_ml/ML_EVALUATION_TRIAGE.md section 3.">
-                    not deployed</span>
+                  {# Component C was NOT deployed at Phase 5 (50.8% accuracy vs a 40.5%
+                     majority baseline). Phase 7a's label recovery moved it to 77.6% precision
+                     at p>=0.80 on well-supported classes, so it now ships - but only as a
+                     gated hint: confidence >= 0.50, probability >= 0.80, and only tactics
+                     with >= 30 training examples. #}
+                  <span class="badge bg-warning text-dark"
+                        title="Gated hint only: Component B confidence >= {{ ml.tactic_gate.min_confidence if ml.tactic_gate else '0.50' }},
+                               probability >= {{ ml.tactic_gate.min_probability if ml.tactic_gate else '0.80' }}, and only tactics with
+                               >= {{ ml.tactic_gate.min_support if ml.tactic_gate else '30' }} training examples.{% if ml.tactic_gate %}
+                               Measured {{ ml.tactic_gate.precision_pct }}% precision at that threshold,
+                               over {{ ml.tactic_gate.coverage_pct }}% of attacks.{% endif %}">
+                    gated hint</span>
                 {% else %}
                   <span class="badge bg-success">active</span>
                 {% endif %}
@@ -70,8 +74,11 @@
       </div>
       {% if ml.feature_counts %}
       <div class="card-footer small text-muted">
-        {{ ml.feature_counts.total }} features
-        ({{ ml.feature_counts.t1 }} always-available / {{ ml.feature_counts.t2 }} Sysmon-only).
+        {{ ml.feature_counts.total }} features &mdash;
+        {{ ml.feature_counts.t1 }} available on every host,
+        {{ ml.feature_counts.t2 }} needing Sysmon,
+        {{ ml.feature_counts.t3 }} needing PowerShell module logging.
+        Tier is chosen per host from the telemetry actually present.
         A model trained against a different feature spec is refused rather than used.
       </div>
       {% endif %}
@@ -121,7 +128,7 @@
     <table class="table table-sm table-hover mb-0">
       <thead><tr>
         <th>Host</th><th>Process</th><th>Anomaly</th><th>Confidence</th>
-        <th>Sev</th><th>Why it was flagged</th><th class="mono">Time</th>
+        <th>Sev</th><th>ML suggests</th><th>Why it was flagged</th><th class="mono">Time</th>
       </tr></thead>
       <tbody>
       {% for a in anomalies %}
@@ -139,6 +146,15 @@
             {% else %}<span class="text-muted small">unscored</span>{% endif %}
           </td>
           <td><span class="badge badge-{{ a.severity }}">{{ a.severity }}</span></td>
+          <td class="small">
+            {% if a.suggested_tactics and a.suggested_tactics.suggestions %}
+              {% for t in a.suggested_tactics.suggestions %}
+                <span class="badge bg-secondary"
+                      title="ML hint, not an authoritative ATT&CK mapping{% if ml.tactic_gate %} - measured {{ ml.tactic_gate.precision_pct }}% precision at this threshold{% endif %}">
+                  {{ t.tactic }} {{ '%.0f'|format(t.probability * 100) }}%</span>
+              {% endfor %}
+            {% else %}<span class="text-muted">&mdash;</span>{% endif %}
+          </td>
           <td class="small text-muted">
             {% if a.ml_explanation and a.ml_explanation.top_features %}
               {% for f in a.ml_explanation.top_features[:3] %}
@@ -151,7 +167,7 @@
           <td class="mono small">{{ (a.detected_at_utc or '')[:19] }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="7" class="text-muted p-3">
+        <tr><td colspan="8" class="text-muted p-3">
           No ML findings yet. Press <b>Score now</b>, or run the engine.
         </td></tr>
       {% endfor %}
@@ -162,6 +178,12 @@
     <b>Anomaly</b> = percentile against this estate's benign baseline (1.000 = most unusual seen).
     <b>Confidence</b> = calibrated P(malicious) from the supervised model.
     A high anomaly with a low confidence usually means unusual-but-legitimate software.
+    <b>ML suggests</b> is a tactic <i>hint</i>{% if ml.tactic_gate %}
+    (measured <b>{{ ml.tactic_gate.precision_pct }}% precision</b> at this gate, covering
+    {{ ml.tactic_gate.coverage_pct }}% of attacks){% endif %}, shown only when confidence
+    &ge; {{ ml.tactic_gate.min_confidence if ml.tactic_gate else 0.50 }} and only for tactics
+    with enough training support &mdash; the tactic model is trained on attacks alone, so
+    asking it about a benign process is out of distribution.
     These are statistical findings, not rule matches &mdash; verify before acting.
   </div>
 </div>

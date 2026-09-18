@@ -18,16 +18,22 @@ Hard rules
    leaks. Hence the split: `extract_process_frame` (pure read) -> `fit_stats` (train folds
    only) -> `transform`.
 
-Feature tiers
--------------
+Feature tiers (cumulative: t1 < t2 < t3)
+----------------------------------------
 * **T1** - computable from `raw_processes` + `raw_connections`, i.e. from a psutil sweep.
   Available on every enrolled host today.
 * **T2** - adds features derived from Sysmon events in `raw_logs` (`source='sysmon'`).
   Available only where `scripts/install_sysmon.ps1` has been run. `sysmon_available` gates
   the whole block; when it is 0 every T2 feature is NaN.
+* **T3** - adds PowerShell module logging (EID 4103), which is GPO-controlled and off by
+  default. `psh_available` gates it. Worth the trouble because EID 4103's payload contains
+  the *deobfuscated* pipeline: for an Empire agent whose command line is pure base64, the
+  payload spells out the RC4 key schedule and the literal C2 URIs. No command-line feature
+  can see any of that.
 
-The T1-vs-T2 ablation is a headline result: it measures what installing Sysmon buys in
-detection terms. See docs/ML_ARCHITECTURE.md sections 5.4 and 7.4.
+Each tier is an ablation that answers a deployment question with a number rather than an
+opinion: "what does installing Sysmon buy?", "what does enabling script-block logging buy?"
+See docs/ML_ARCHITECTURE.md sections 5.4 and 7.4, and docs/ML_PHASE7_PLAN.md.
 """
 from __future__ import annotations
 
@@ -46,6 +52,21 @@ import pandas as pd
 
 TIER_T1 = "t1"
 TIER_T2 = "t2"
+TIER_T3 = "t3"
+
+# Tiers are cumulative: t1 < t2 < t3. Each step needs strictly more telemetry than the last,
+# so a host can only use a tier it actually has the data for.
+#   t1  psutil alone            - every enrolled host today
+#   t2  + Sysmon                - hosts where scripts/install_sysmon.ps1 has run
+#   t3  + PowerShell module logging - needs GPO, off by default
+_TIER_ORDER = (TIER_T1, TIER_T2, TIER_T3)
+
+
+def tiers_up_to(tier: str) -> tuple[str, ...]:
+    """Every tier included at `tier`, since tiers are cumulative."""
+    if tier not in _TIER_ORDER:
+        raise ValueError(f"unknown tier {tier!r}; known: {_TIER_ORDER}")
+    return _TIER_ORDER[:_TIER_ORDER.index(tier) + 1]
 
 # --------------------------------------------------------------------------- domain sets
 
@@ -376,9 +397,50 @@ def _spec() -> tuple[FeatureDef, ...]:
     a("conn_established_count", TIER_T1, "established sockets (NaN when state unavailable)")
 
     # ---- temporal
-    a("hour_of_day", TIER_T1, "UTC hour of collection")
+    #
+    # `hour_of_day` was REMOVED in Phase 7b.1. Its PSI between the training corpus and live
+    # data was 8.67 - by far the worst of any feature - because it encodes *when the 2020 lab
+    # captures were recorded*, not behaviour. A feature that cannot generalise across estates
+    # is worse than no feature: it looks predictive in cross-validation and transfers nothing.
+    # `is_off_hours` and `is_weekend` are kept because they are estate-relative rather than
+    # absolute, but they remain weak (no per-host timezone) and are reported as such.
     a("is_off_hours", TIER_T1, "outside 07:00-19:00 UTC - weak, no per-host timezone")
     a("is_weekend", TIER_T1, "Saturday or Sunday UTC")
+    # Burst features, computed from `raw_processes.create_time_utc` - each process's own
+    # start time, never the time the agent swept.
+    #
+    # Phase 7b.2 shipped five of these keyed off `collected_at_utc` and reported +0.0134
+    # PR-AUC. Phase 8 found all five were NaN on every live row, because a psutil sweep
+    # stamps one collection time across every process it sees. Three were then removed on
+    # measurement rather than repaired (docs/ML_PHASE8_PLAN.md section 1):
+    #
+    #   collection_has_timespan          AUC 0.479, delta exactly 0.0000 - a gate always open
+    #   seconds_since_collection_start   malicious median 0.5s vs benign 26.9s: it measured
+    #                                    position within a lab recording, the same artefact
+    #                                    `hour_of_day` was removed for, and removing it
+    #                                    IMPROVED PR-AUC by 0.0029
+    #   proc_spawn_rate_per_min          identical for every row in a collection, and defined
+    #                                    over the collection's whole span - which is ~3 min
+    #                                    for a capture and can be weeks for a live sweep, so
+    #                                    the number is not comparable across sources at all
+    #
+    # What survives is only what is *per-process* and *scale-free*: a count inside a fixed
+    # time window, and a parent-to-child gap. Both mean the same thing on a 3-minute capture
+    # and on a live host, which is the property the deleted three lacked.
+    # `procs_within_60s` was added here in Phase 8 as the replacement for the deleted
+    # collection-wide spawn rate, and then removed in the same phase after measurement:
+    # dropping it IMPROVED PR-AUC by 0.0154 while costing 2.4pp of recall @1% FPR, and it
+    # carried the worst residual train/serve shift of the three (PSI 3.94 against 0.97 for
+    # the 5s window). Adding a feature because it seemed reasonable, and keeping it because
+    # it was already written, is exactly the mistake that produced this phase. The 5s window
+    # survives on evidence: removing it costs 7.8pp of recall at the operating point.
+    a("procs_within_5s", TIER_T1, "processes starting within 5s of this one - tight burst")
+    # Retained despite measuring neutral (+0.0005 PR-AUC, -0.0049 recall - both inside the
+    # noise floor), for the same reason the T3 PowerShell tier is retained: it is evidence an
+    # analyst reads during an investigation even when it does not move a detection metric.
+    # That is a stated null result, not a quiet keep.
+    a("seconds_since_parent_start", TIER_T1,
+      "gap between parent and child start - implants spawn children promptly")
 
     # ---- T2: Sysmon
     a("sysmon_available", TIER_T2,
@@ -403,6 +465,29 @@ def _spec() -> tuple[FeatureDef, ...]:
     a("sysmon_dns_distinct_domains", TIER_T2, "distinct queried names")
     a("sysmon_dns_failure_ratio", TIER_T2, "fraction of non-zero QueryStatus - DGA/dead C2")
 
+    # ---- T3: PowerShell module logging (EID 4103)
+    #
+    # Needs PowerShell module/pipeline logging, which is GPO-controlled and off by default -
+    # hence a tier of its own, measured like the T1-vs-T2 Sysmon ablation.
+    #
+    # Why it is worth the trouble: EID 4103's Payload contains the *deobfuscated* pipeline.
+    # For an Empire agent whose command line is nothing but base64, the payload spells out the
+    # RC4 key schedule and the literal C2 URIs (/admin/get.php, /news.php, /login/process.php).
+    # None of that is visible to any command-line feature.
+    a("psh_available", TIER_T3,
+      "1 if this collection has attributable PowerShell module logging; gates the rest")
+    a("psh_event_count", TIER_T3, "EID 4103 events attributed to this process")
+    a("psh_payload_total_len", TIER_T3, "total deobfuscated payload length (saturating)")
+    a("psh_payload_max_entropy", TIER_T3, "highest payload entropy - packed/encoded content")
+    a("psh_distinct_commands", TIER_T3, "distinct CommandInvocation() names invoked")
+    a("psh_has_download_cradle", TIER_T3, "payload contains a download cradle")
+    a("psh_has_iex", TIER_T3, "payload contains Invoke-Expression / IEX")
+    a("psh_has_url", TIER_T3, "URL or URI path in the payload - C2 endpoints surface here")
+    a("psh_has_crypto_loop", TIER_T3, "byte-array/modulo arithmetic - custom crypto or packing")
+    a("psh_host_app_encoded", TIER_T3, "the PowerShell host was launched with -EncodedCommand")
+    a("psh_payload_to_cmdline_ratio", TIER_T3,
+      "deobfuscated payload length / command-line length - how much the command line hides")
+
     return tuple(f)
 
 
@@ -410,6 +495,13 @@ FEATURE_SPEC: tuple[FeatureDef, ...] = _spec()
 FEATURE_NAMES: tuple[str, ...] = tuple(fd.name for fd in FEATURE_SPEC)
 T1_FEATURES: tuple[str, ...] = tuple(fd.name for fd in FEATURE_SPEC if fd.tier == TIER_T1)
 T2_FEATURES: tuple[str, ...] = tuple(fd.name for fd in FEATURE_SPEC if fd.tier == TIER_T2)
+T3_FEATURES: tuple[str, ...] = tuple(fd.name for fd in FEATURE_SPEC if fd.tier == TIER_T3)
+
+
+def features_for_tier(tier: str) -> tuple[str, ...]:
+    """Feature names available at `tier`, cumulatively."""
+    included = set(tiers_up_to(tier))
+    return tuple(fd.name for fd in FEATURE_SPEC if fd.tier in included)
 
 # Features that need fitted corpus statistics; NaN when no stats are supplied.
 FITTED_FEATURES: tuple[str, ...] = (
@@ -435,8 +527,12 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "tree": ("sibling_count", "child_count", "tree_depth", "is_orphan"),
     "user": tuple(n for n in FEATURE_NAMES if n.startswith("user_")),
     "conn": tuple(n for n in FEATURE_NAMES if n.startswith("conn_")),
-    "temporal": ("hour_of_day", "is_off_hours", "is_weekend"),
+    # hour_of_day was removed in Phase 7b.1 (PSI 8.67) and must not be listed here either -
+    # a stale group name silently breaks features_excluding().
+    "temporal": ("is_off_hours", "is_weekend"),
     "sysmon": T2_FEATURES,
+    "powershell": T3_FEATURES,
+    "temporal_burst": ("procs_within_5s", "seconds_since_parent_start"),
     "rarity": FITTED_FEATURES,
     # See SEED_ECHO_FEATURES.
     "seed_echo": (
@@ -444,6 +540,13 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "cmdline_has_hidden_window", "cmdline_has_policy_bypass",
         "cmdline_has_download_verb", "cmdline_has_pipe_to_shell",
         "parent_cmdline_has_encoded_flag", "exe_is_lolbin", "exe_is_script_host",
+        # T3 additions. These restate seed signatures just as the command-line flags do -
+        # psh_host_app_encoded is literally the Empire `-enc <base64>` seed read off the
+        # PowerShell host's command line - so they belong in the audit. psh_has_url,
+        # psh_has_crypto_loop and psh_payload_to_cmdline_ratio are NOT listed: nothing in
+        # ml/datasets/labels.py keys on payload URIs or key-schedule arithmetic, so those
+        # are genuinely new evidence.
+        "psh_host_app_encoded", "psh_has_download_cradle", "psh_has_iex",
     ),
 }
 
@@ -464,7 +567,7 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
 SEED_ECHO_FEATURES: tuple[str, ...] = FEATURE_GROUPS["seed_echo"]
 
 
-def features_excluding(*group_names: str, tier: str = TIER_T2) -> list[str]:
+def features_excluding(*group_names: str, tier: str = TIER_T3) -> list[str]:
     """Feature names for `tier`, minus every feature in the named groups."""
     drop: set[str] = set()
     for group in group_names:
@@ -472,8 +575,7 @@ def features_excluding(*group_names: str, tier: str = TIER_T2) -> list[str]:
             raise KeyError(f"unknown feature group {group!r}; "
                            f"known: {sorted(FEATURE_GROUPS)}")
         drop.update(FEATURE_GROUPS[group])
-    wanted = FEATURE_NAMES if tier == TIER_T2 else T1_FEATURES
-    return [n for n in wanted if n not in drop]
+    return [n for n in features_for_tier(tier) if n not in drop]
 
 
 def feature_spec_sha256() -> str:
@@ -489,11 +591,27 @@ def feature_spec_sha256() -> str:
 
 # --------------------------------------------------------------------------- extraction
 
-_PROCESS_SQL = """
-SELECT p.id, p.host_id, p.collection_id, p.collected_at_utc, p.pid, p.ppid,
-       p.name, p.cmdline, p.exe_path, p.sha256, p.username
-FROM raw_processes p
-"""
+_PROCESS_COLUMNS = ("id", "host_id", "collection_id", "collected_at_utc", "pid", "ppid",
+                    "name", "cmdline", "exe_path", "sha256", "username")
+
+
+def _process_sql(conn) -> str:
+    """Process query, selecting `create_time_utc` only when the database actually has it.
+
+    The column arrives with the ML migration. Naming it unconditionally would turn a
+    pre-migration database into an OperationalError inside the feature layer, and the
+    contract for this whole layer is that missing telemetry degrades to NaN rather than
+    raising - detection has to keep working on a host the ML overlay never reached.
+    """
+    selected = list(_PROCESS_COLUMNS)
+    try:
+        present = {r[1] for r in conn.execute("PRAGMA table_info(raw_processes)")}
+    except Exception:                            # noqa: BLE001 - treat as "cannot tell"
+        present = set()
+    selected.append("create_time_utc" if "create_time_utc" in present
+                    else "NULL AS create_time_utc")
+    return "SELECT " + ", ".join(f"p.{c}" if " " not in c else c
+                                 for c in selected) + " FROM raw_processes p"
 
 _CONN_SQL = """
 SELECT c.host_id, c.collection_id, c.pid, c.remote_ip, c.remote_port, c.proto, c.status
@@ -524,6 +642,36 @@ SELECT l.host_id, l.collection_id, l.event_id,
 FROM raw_logs l
 WHERE l.source = 'sysmon'
 """
+
+# PowerShell module logging (EID 4103).
+#
+# ExecutionProcessID is the SUBJECT process here - the powershell.exe host writes its own
+# events. On Sysmon events the same field is Sysmon's service pid and must never be used this
+# way; see ml/datasets/otrf_etl.py. Rows with ExecutionProcessID 0 are unattributable (that is
+# every EID 400/600/800) and are filtered out rather than guessed at.
+_POWERSHELL_SQL = """
+SELECT l.host_id, l.collection_id,
+       CAST(json_extract(l.payload_json, '$.fields.ExecutionProcessID') AS INTEGER) AS pid,
+       json_extract(l.payload_json, '$.fields.Payload')     AS f_payload,
+       json_extract(l.payload_json, '$.fields.ContextInfo') AS f_context
+FROM raw_logs l
+WHERE l.source = 'powershell' AND l.event_id = 4103
+  AND json_extract(l.payload_json, '$.fields.ExecutionProcessID') IS NOT NULL
+  AND CAST(json_extract(l.payload_json, '$.fields.ExecutionProcessID') AS INTEGER) > 0
+"""
+
+# Payload markers. Deliberately distinct from the command-line regexes: the point of this tier
+# is to catch what the command line hides.
+_RX_PS_COMMAND = re.compile(r"CommandInvocation\(([^)]+)\)")
+_RX_PS_IEX = re.compile(r"invoke-expression|\biex\b", re.I)
+_RX_PS_URL = re.compile(r"https?://|/[a-z0-9_-]+\.(php|asp|aspx|jsp|cgi)\b", re.I)
+# Byte-array arithmetic with a modulo - the shape of an RC4/XOR key schedule, which appears
+# verbatim in the deobfuscated payload of Empire-style stagers.
+_RX_PS_CRYPTO = re.compile(r"%\s*256|\[byte\[\]\]|-bxor|frombase64string|"
+                           r"\$[A-Za-z_]\w*\[\$[A-Za-z_]\w*\s*%", re.I)
+# Saturation point shared with the ETL's PS_PAYLOAD_CAP so a truncated corpus and an
+# untruncated production log yield the same number.
+PS_PAYLOAD_SATURATION = 1500
 
 _INTEGRITY_ORDINAL = {"untrusted": 0, "low": 1, "medium": 2, "high": 3, "system": 4}
 
@@ -722,6 +870,57 @@ def _aggregate_sysmon(sys_df: pd.DataFrame) -> tuple[pd.DataFrame, set]:
     return merged, covered
 
 
+def _aggregate_powershell(ps_df: pd.DataFrame) -> tuple[pd.DataFrame, set]:
+    """Per-(host, collection, pid) PowerShell aggregates, plus the collections that have any.
+
+    The second value distinguishes "PowerShell logging is off here" (all T3 features NaN)
+    from "logging is on and this process ran no PowerShell" (true zeros) - the same
+    availability contract used for Sysmon.
+    """
+    cols = ["host_id", "collection_id", "pid", "psh_event_count", "psh_payload_total_len",
+            "psh_payload_max_entropy", "psh_distinct_commands", "psh_has_download_cradle",
+            "psh_has_iex", "psh_has_url", "psh_has_crypto_loop", "psh_host_app_encoded"]
+    if ps_df.empty:
+        return pd.DataFrame(columns=cols), set()
+
+    df = ps_df.copy()
+    df["pid"] = pd.to_numeric(df["pid"], errors="coerce")
+    df = df.dropna(subset=["pid"])
+    if df.empty:
+        return pd.DataFrame(columns=cols), set()
+    df["pid"] = df["pid"].astype("int64")
+    covered = set(zip(df["host_id"], df["collection_id"]))
+
+    payload = [("" if pd.isna(v) else str(v)) for v in df["f_payload"]]
+    context = [("" if pd.isna(v) else str(v)) for v in df["f_context"]]
+    df["_len"] = [min(len(v), PS_PAYLOAD_SATURATION) for v in payload]
+    df["_entropy"] = [shannon_entropy(v) if v else 0.0 for v in payload]
+    df["_commands"] = [",".join(sorted(set(_RX_PS_COMMAND.findall(v)))) for v in payload]
+    df["_download"] = [bool(_RX_DOWNLOAD.search(v)) for v in payload]
+    df["_iex"] = [bool(_RX_PS_IEX.search(v)) for v in payload]
+    df["_url"] = [bool(_RX_PS_URL.search(v)) for v in payload]
+    df["_crypto"] = [bool(_RX_PS_CRYPTO.search(v)) for v in payload]
+    df["_host_enc"] = [bool(_RX_ENCODED_FLAG.search(v)) for v in context]
+
+    grouped = df.groupby(["host_id", "collection_id", "pid"], dropna=False)
+    out = pd.DataFrame({
+        "psh_event_count": grouped.size(),
+        "psh_payload_total_len": grouped["_len"].sum(),
+        "psh_payload_max_entropy": grouped["_entropy"].max(),
+        "psh_has_download_cradle": grouped["_download"].max().astype(float),
+        "psh_has_iex": grouped["_iex"].max().astype(float),
+        "psh_has_url": grouped["_url"].max().astype(float),
+        "psh_has_crypto_loop": grouped["_crypto"].max().astype(float),
+        "psh_host_app_encoded": grouped["_host_enc"].max().astype(float),
+    }).reset_index()
+    # Distinct command names across all of a process's events.
+    distinct = grouped["_commands"].apply(
+        lambda series: len({c for joined in series for c in joined.split(",") if c}))
+    out = out.merge(distinct.rename("psh_distinct_commands").reset_index(),
+                    on=["host_id", "collection_id", "pid"], how="left")
+    return out, covered
+
+
 def _tree_features(proc_df: pd.DataFrame) -> pd.DataFrame:
     """Sibling/child counts, ancestor depth and orphan status within each collection.
 
@@ -772,7 +971,7 @@ def extract_process_frame(conn, host_ids=None, collection_ids=None,
     Contains no learned statistic, so it is safe to compute once and split for
     cross-validation afterwards.
     """
-    sql = _PROCESS_SQL
+    sql = _process_sql(conn)
     params: list = []
     where, scope_params = _scope_clause(host_ids, collection_ids, "p")
     if since_utc:
@@ -782,10 +981,24 @@ def extract_process_frame(conn, host_ids=None, collection_ids=None,
         params = scope_params + ([since_utc] if since_utc else [])
     rows = conn.execute(sql, params).fetchall()
     if not rows:
-        return pd.DataFrame(columns=[
-            "id", "host_id", "collection_id", "collected_at_utc", "pid", "ppid", "name",
-            "cmdline", "exe_path", "sha256", "username"])
+        return pd.DataFrame(columns=list(_PROCESS_COLUMNS) + ["create_time_utc"])
     proc = pd.DataFrame([dict(r) for r in rows])
+
+    # pid/ppid are the join keys for the parent self-join below, and pandas refuses to merge
+    # an object column against an int64 one. A column of all-NULL ppid - a collection made
+    # only of container process mappings, which carry no ppid - infers as `object` and made
+    # the merge raise ValueError instead of yielding no parents. Coercing both keys first
+    # means a process with no recorded parent gets NaN parent attributes, which is what the
+    # rest of the pipeline already expects.
+    #
+    # `Int64`, not `Float64`: a pid is an integer, and the nullable *integer* dtype is what
+    # keeps it printing as "4" rather than "4.0". Float64 here silently broke the confidence
+    # scorer, which matches detections back to processes by pid and found nothing to match
+    # "4.0" against - 25 ML findings went unscored and the UI showed them all as "unscored"
+    # before this was caught.
+    for key in ("pid", "ppid"):
+        if key in proc.columns:
+            proc[key] = pd.to_numeric(proc[key], errors="coerce").astype("Int64")
 
     # ---- parent attributes, by self-join on (host, collection, ppid -> pid)
     parent_src = proc[["host_id", "collection_id", "pid", "name", "cmdline", "exe_path"]].rename(
@@ -810,9 +1023,80 @@ def extract_process_frame(conn, host_ids=None, collection_ids=None,
         float((h, c) in sysmon_covered) for h, c in zip(proc["host_id"], proc["collection_id"])
     ]
 
+    # ---- PowerShell module logging (T3)
+    ps_df = _read(conn, _POWERSHELL_SQL, host_ids, collection_ids, "l", has_where=True)
+    ps_agg, ps_covered = _aggregate_powershell(ps_df)
+    if not ps_agg.empty:
+        proc = proc.merge(ps_agg, on=["host_id", "collection_id", "pid"], how="left")
+    proc["psh_available"] = [
+        float((h, c) in ps_covered) for h, c in zip(proc["host_id"], proc["collection_id"])
+    ]
+
     # ---- tree shape
     proc = proc.merge(_tree_features(proc), on="id", how="left")
+    # ---- burst / rate (needs the timestamps, so it runs after everything is joined)
+    proc = proc.merge(_temporal_features(proc), on="id", how="left")
     return proc
+
+
+def _temporal_features(proc_df: pd.DataFrame) -> pd.DataFrame:
+    """Burst features, computed within each collection from each process's own start time.
+
+    **Reads `create_time_utc`, never `collected_at_utc`, and does not fall back to it.**
+    That is the entire point of this function's Phase 8 rewrite. In the corpus the two
+    columns hold the same value, because a corpus row is a Sysmon EID 1 record and its
+    UtcTime *is* the launch time. On a live host they differ completely: `collected_at_utc`
+    is when the agent swept, identical across every process in that sweep. Keying off it made
+    every one of these features NaN in production while looking healthy in training.
+
+    Falling back to `collected_at_utc` when `create_time_utc` is NULL would reintroduce the
+    bug quietly - one column would mean "started at" for some rows and "observed at" for
+    others, and the model would learn across both. NaN is the honest value for "this host did
+    not tell us when the process started", and NaN is what the imputer is for.
+
+    The count is **windowed**, not collection-wide, so it is scale-free: "how many processes
+    started within 5 seconds of this one" means the same thing in a 3-minute lab capture and
+    on a host that has been up for a month. A collection-wide rate does not, which is why
+    `proc_spawn_rate_per_min` was removed rather than repaired.
+    """
+    columns = ["id", "procs_within_5s", "seconds_since_parent_start"]
+    if proc_df.empty or "create_time_utc" not in proc_df.columns:
+        return pd.DataFrame(columns=columns)
+
+    out = []
+    for _, group in proc_df.groupby(["host_id", "collection_id"], dropna=False):
+        starts = {}
+        for row_id, raw in zip(group["id"], group["create_time_utc"]):
+            parsed = parse_iso(raw) if raw is not None and pd.notna(raw) else None
+            starts[row_id] = parsed.timestamp() if parsed else None
+        known = sorted(v for v in starts.values() if v is not None)
+
+        # pid -> start time, for the parent-gap feature
+        start_by_pid = {}
+        for pid, row_id in zip(group["pid"], group["id"]):
+            if pd.notna(pid) and starts.get(row_id) is not None:
+                start_by_pid.setdefault(int(pid), starts[row_id])
+
+        for row_id, ppid in zip(group["id"], group["ppid"]):
+            t = starts.get(row_id)
+            if t is None:
+                out.append({"id": row_id, "procs_within_5s": np.nan,
+                            "seconds_since_parent_start": np.nan})
+                continue
+            # Self is excluded from both counts, so a lone process scores 0 rather than 1.
+            near_5 = sum(1 for other in known if abs(other - t) <= 5.0) - 1
+            parent_start = (start_by_pid.get(int(ppid))
+                            if pd.notna(ppid) and int(ppid) in start_by_pid else None)
+            out.append({
+                "id": row_id,
+                "procs_within_5s": float(max(near_5, 0)),
+                # Negative would mean the child predates its parent - a pid-reuse artefact,
+                # so it is dropped rather than fed in as a nonsense value.
+                "seconds_since_parent_start": (float(t - parent_start)
+                                               if parent_start is not None
+                                               and t >= parent_start else np.nan),
+            })
+    return pd.DataFrame(out, columns=columns)
 
 
 # --------------------------------------------------------------------------- fitted stats
@@ -915,15 +1199,14 @@ def _num(frame: pd.DataFrame, name: str) -> pd.Series:
 
 
 def transform(frame: pd.DataFrame, stats: FeatureStats | None = None,
-              tier: str = TIER_T2) -> pd.DataFrame:
+              tier: str = TIER_T3) -> pd.DataFrame:
     """Turn a raw frame into the feature matrix, in FEATURE_SPEC order.
 
     `tier='t1'` zeroes nothing - it simply omits the T2 columns, so a T1 model can never
     accidentally see a Sysmon-derived value.
     """
     if frame.empty:
-        wanted = FEATURE_NAMES if tier == TIER_T2 else T1_FEATURES
-        return pd.DataFrame(columns=list(wanted))
+        return pd.DataFrame(columns=list(features_for_tier(tier)))
 
     n = len(frame)
     out: dict[str, object] = {}
@@ -1038,15 +1321,21 @@ def transform(frame: pd.DataFrame, stats: FeatureStats | None = None,
         out[col] = _num(frame, col).where(has_status, np.nan)
 
     # ---- temporal
+    #
+    # hour_of_day is deliberately absent: PSI 8.67 between corpus and live, because it
+    # encodes when the 2020 lab captures ran rather than anything behavioural. Removed in
+    # Phase 7b.1.
     parsed = [parse_iso(v) for v in _col(frame, "collected_at_utc")]
-    out["hour_of_day"] = [float(d.hour) if d else np.nan for d in parsed]
     out["is_off_hours"] = [
         np.nan if not d else float(not (BUSINESS_HOUR_START <= d.hour < BUSINESS_HOUR_END))
         for d in parsed]
     out["is_weekend"] = [float(d.weekday() >= 5) if d else np.nan for d in parsed]
+    for col in ("procs_within_5s", "seconds_since_parent_start"):
+        out[col] = _num(frame, col)
 
     # ---- T2
-    if tier == TIER_T2:
+    included = set(tiers_up_to(tier))
+    if TIER_T2 in included:
         sysmon_on = _num(frame, "sysmon_available").fillna(0) > 0
         out["sysmon_available"] = sysmon_on.map(float)
         counting = {
@@ -1066,8 +1355,34 @@ def transform(frame: pd.DataFrame, stats: FeatureStats | None = None,
                 values = values.fillna(0.0)
             out[fd.name] = values.where(sysmon_on, np.nan)
 
-    wanted = [fd.name for fd in FEATURE_SPEC
-              if tier == TIER_T2 or fd.tier == TIER_T1]
+    # ---- T3: PowerShell module logging
+    if TIER_T3 in included:
+        psh_on = _num(frame, "psh_available").fillna(0) > 0
+        out["psh_available"] = psh_on.map(float)
+        # With logging on, "this process ran no PowerShell" is a genuine zero; with logging
+        # off, it is unknown. Same contract as the Sysmon block above.
+        counting_t3 = {"psh_event_count", "psh_payload_total_len", "psh_distinct_commands",
+                       "psh_has_download_cradle", "psh_has_iex", "psh_has_url",
+                       "psh_has_crypto_loop", "psh_host_app_encoded"}
+        for fd in FEATURE_SPEC:
+            if fd.tier != TIER_T3 or fd.name == "psh_available":
+                continue
+            if fd.name == "psh_payload_to_cmdline_ratio":
+                continue                         # derived below
+            values = _num(frame, fd.name)
+            if fd.name in counting_t3:
+                values = values.fillna(0.0)
+            out[fd.name] = values.where(psh_on, np.nan)
+        # How much the command line hides: deobfuscated payload length over command-line
+        # length. An Empire agent whose command line is pure base64 scores very high here.
+        payload_len = _num(frame, "psh_payload_total_len").fillna(0.0)
+        cmd_len = pd.Series(
+            [float(len(v)) if v else np.nan for v in cmd], index=frame.index)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = payload_len / cmd_len.replace(0.0, np.nan)
+        out["psh_payload_to_cmdline_ratio"] = ratio.where(psh_on, np.nan)
+
+    wanted = list(features_for_tier(tier))
     matrix = pd.DataFrame(out, index=frame.index)
     for col in wanted:                       # guarantee full, ordered coverage
         if col not in matrix.columns:
@@ -1076,7 +1391,7 @@ def transform(frame: pd.DataFrame, stats: FeatureStats | None = None,
 
 
 def build_matrix(conn, host_ids=None, collection_ids=None, since_utc=None,
-                 stats: FeatureStats | None = None, tier: str = TIER_T2):
+                 stats: FeatureStats | None = None, tier: str = TIER_T3):
     """Convenience wrapper: read + transform. Returns (X, raw_frame)."""
     frame = extract_process_frame(conn, host_ids, collection_ids, since_utc)
     return transform(frame, stats=stats, tier=tier), frame

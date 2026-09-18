@@ -344,3 +344,130 @@ def _score_confidence(conn, only_missing: bool, limit: int) -> dict:
         conn.commit()
     return {"scored": len(updates), "tier": tier, "by_band": bands,
             "model_trained_at": artefact.get("trained_at_utc")}
+
+
+# ---------------------------------------------------------------------------
+# Component C - ATT&CK tactic suggestion for ML findings.
+# ---------------------------------------------------------------------------
+
+def _gate_precision(artefact: dict | None) -> float | None:
+    """Measured precision at the shipped gate, read from the artefact's own evaluation.
+
+    Returns None rather than a default when the artefact predates the gate analysis: a
+    plausible-looking but wrong precision in front of an analyst is worse than no number.
+    """
+    gate = ((artefact or {}).get("metrics") or {}).get("gating") or {}
+    value = (gate.get("shipped_operating_point") or {}).get("precision")
+    return float(value) if value is not None else None
+
+
+def suggest_tactics(conn, only_missing: bool = True, limit: int = 2000) -> dict:
+    """Attach ranked tactic hints to ML detections that carry no technique mapping.
+
+    Why this now runs at all: at Phase 5 the component was measured at 59.5% accuracy even at
+    its best operating point and was deliberately NOT deployed. Phase 7a's label recovery
+    (185 -> 205 positives, and five learnable classes instead of three) moved it to roughly
+    three-in-four precision at p>=0.80 on the well-supported classes, which is worth showing
+    as a hint. The exact figure is re-measured on every training run and read back out of the
+    artefact - see `_gate_precision` - because it moves whenever the model is retrained.
+
+    Two guards keep it honest, both measured rather than assumed:
+      * `MIN_SUGGESTION_PROBABILITY` (0.80) - below it nothing is emitted at all;
+      * `MIN_SUPPORT_TO_SUGGEST` (30 training examples) - thinly-supported classes such as
+        persistence (F1 0.00 on n=10) are never suggested even when they win the argmax.
+
+    The output is a hint and the UI must say so. Never raises.
+    """
+    status = ml_registry.dependencies_available()
+    if not status.available:
+        return {"suggested": 0, "reason": status.reason}
+    try:
+        return _suggest_tactics(conn, only_missing, limit)
+    except Exception as exc:                     # noqa: BLE001 - deliberately broad
+        print(f"[ml] tactic suggestion skipped: {type(exc).__name__}: {exc}")
+        return {"suggested": 0, "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _suggest_tactics(conn, only_missing: bool, limit: int) -> dict:
+    from server.engine import ml_features as mlf, ml_tactic
+
+    tier = ml_registry.choose_tier(conn)
+    artefact = ml_registry.load_artefact("tactic", tier)
+    if artefact is None and tier != "t1":
+        tier = "t1"
+        artefact = ml_registry.load_artefact("tactic", tier)
+    if artefact is None:
+        return {"suggested": 0, "reason": "no tactic model available"}
+
+    # Built once here rather than quoted as a literal, so a retrain that moves the measured
+    # precision cannot leave a stale claim written into every detection row.
+    _precision = _gate_precision(artefact)
+    _hint_note = ("ML hint, not an authoritative ATT&CK mapping"
+                  + (f"; ~{round(_precision * 100)}% precision at this threshold"
+                     if _precision else ""))
+
+    # Only detections Component B already rates as probably-malicious. The tactic model was
+    # trained on malicious processes alone, so asking it about a benign one is out of
+    # distribution - it answered "lateral_movement, p=1.00" for chrome.exe before this gate
+    # existed. Detections with no confidence score yet are skipped rather than guessed at.
+    sql = ("SELECT id, host_id, collection_id, summary FROM detections "
+           "WHERE rule_type = ? AND technique_id IS NULL "
+           "AND confidence_score IS NOT NULL AND confidence_score >= ?"
+           + (" AND suggested_tactics IS NULL" if only_missing else "")
+           + " ORDER BY id DESC LIMIT ?")
+    rows = conn.execute(
+        sql, (RULE_TYPE_ANOMALY, ml_tactic.MIN_CONFIDENCE_TO_SUGGEST, limit)).fetchall()
+    if not rows:
+        return {"suggested": 0,
+                "reason": "no ML detection is both unmapped and above the confidence gate",
+                "confidence_gate": ml_tactic.MIN_CONFIDENCE_TO_SUGGEST}
+
+    wanted: dict[tuple, list[int]] = {}
+    for row in rows:
+        pid = _pid_from_summary(row["summary"])
+        if pid is not None:
+            wanted.setdefault((row["host_id"], row["collection_id"], pid), []).append(row["id"])
+    if not wanted:
+        return {"suggested": 0, "reason": "no detection carried a resolvable pid"}
+
+    frame = mlf.extract_process_frame(conn, host_ids=sorted({k[0] for k in wanted}))
+    if frame.empty:
+        return {"suggested": 0, "reason": "no process rows"}
+
+    stats = mlf.FeatureStats.from_dict(artefact.get("feature_stats") or {})
+    X = mlf.transform(frame, stats=stats, tier=tier)
+    model = ml_tactic.TacticModel.from_payload(artefact["payload"])
+    if [c for c in model.used_features if c not in X.columns]:
+        return {"suggested": 0, "reason": "model expects features the spec no longer produces"}
+
+    suggestions = model.suggest(X)
+    updates, emitted = [], 0
+    frame = frame.reset_index(drop=True)
+    for index in range(len(frame)):
+        row = frame.iloc[index]
+        pid = row.get("pid")
+        if pid is None or _isnan(pid):
+            continue
+        key = (int(row["host_id"]), row.get("collection_id"), int(pid))
+        hits = suggestions[index]
+        if not hits:
+            continue                             # below threshold: emit nothing, not a guess
+        payload = json.dumps({
+            "suggestions": hits,
+            "model_tier": tier,
+            # Precision comes from the artefact's own gate analysis rather than a literal,
+            # so a retrain that moves it cannot leave a stale claim in the database.
+            "note": _hint_note,
+        }, default=str)
+        for detection_id in wanted.get(key, ()):
+            updates.append((payload, detection_id))
+            emitted += 1
+
+    if updates:
+        conn.executemany(
+            "UPDATE detections SET suggested_tactics = ? WHERE id = ?", updates)
+        conn.commit()
+    return {"suggested": emitted, "tier": tier,
+            "suggestable_classes": getattr(model, "suggestable_", []),
+            "probability_threshold": ml_tactic.MIN_SUGGESTION_PROBABILITY,
+            "confidence_gate": ml_tactic.MIN_CONFIDENCE_TO_SUGGEST}

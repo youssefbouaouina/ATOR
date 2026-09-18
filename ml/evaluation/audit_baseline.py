@@ -97,7 +97,7 @@ def _matrix(db_path: str):
         if frame.empty:
             return None, None
         stats = mlf.fit_stats(frame)
-        return mlf.transform(frame, stats=stats, tier=mlf.TIER_T2), frame
+        return mlf.transform(frame, stats=stats, tier=mlf.TIER_T3), frame
     finally:
         conn.close()
 
@@ -125,6 +125,7 @@ def run(as_json: bool = False, top: int = 20) -> dict:
             "total": len(mlf.FEATURE_NAMES),
             "t1": len(mlf.T1_FEATURES),
             "t2": len(mlf.T2_FEATURES),
+            "t3": len(mlf.T3_FEATURES),
         },
         "live_db": {"path": LIVE_DB, "tables": _table_counts(LIVE_DB)},
         "train_db": {"path": TRAIN_DB, "tables": _table_counts(TRAIN_DB)},
@@ -166,7 +167,8 @@ def _print_human(result: dict, top: int) -> None:
     print("=" * 78)
     print(f"\nfeature spec sha256 : {result['feature_spec_sha256']}")
     fc = result["feature_counts"]
-    print(f"features            : {fc['total']}  ({fc['t1']} T1 / {fc['t2']} T2)")
+    print(f"features            : {fc['total']}  "
+          f"({fc['t1']} T1 / {fc['t2']} T2 / {fc.get('t3', 0)} T3)")
     print(f"rows                : train={result['rows']['train']}  live={result['rows']['live']}")
 
     print("\n--- live database (ator_dfir.db) ---")
