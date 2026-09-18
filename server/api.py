@@ -147,11 +147,15 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
             continue
         conn.execute(
             """INSERT INTO raw_processes (host_id, collection_id, collected_at_utc, pid, ppid,
-                                          name, cmdline, exe_path, sha256, username)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                                          name, cmdline, exe_path, sha256, username,
+                                          create_time_utc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (host["id"], collection_id, received, item.get("pid"), item.get("ppid"),
              item.get("name"), item.get("cmdline"), item.get("exe_path"),
-             item.get("sha256"), item.get("username")),
+             item.get("sha256"), item.get("username"),
+             # Older agents do not send this; NULL is the honest value for "not reported"
+             # and the timing features skip the row rather than inventing a time.
+             item.get("create_time_utc")),
         )
     for item in artifacts.get("network") or []:
         if not isinstance(item, dict) or "_error" in item:

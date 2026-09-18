@@ -314,6 +314,18 @@ ML_DETECTION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_det_anomaly ON detections(anomaly_score)",
 )
 
+# Columns added to the existing raw_processes table.
+#
+# A psutil sweep stamps every process it sees with ONE collection timestamp, so
+# `collected_at_utc` says when the agent looked, not when the process started. The corpus,
+# built from Sysmon EID 1, has a real per-process launch time in that same column - which
+# meant every timing feature was computable in training and NaN on every live host. Giving a
+# process its own start time closes that gap; it is also ordinary DFIR telemetry that every
+# EDR records, so it earns its place in the schema independently of the ML layer.
+ML_RAW_PROCESS_COLUMNS = (
+    ("create_time_utc", "TEXT"),       # ISO-8601 UTC; NULL when the OS would not say
+)
+
 # Columns added to the existing detections table. SQLite has no
 # "ADD COLUMN IF NOT EXISTS", so each is applied only when absent.
 ML_DETECTION_COLUMNS = (
@@ -351,11 +363,15 @@ def migrate(conn):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     changed["tables_created"] = sorted(after - before)
 
-    existing = _table_columns(conn, "detections")
-    for column, coltype in ML_DETECTION_COLUMNS:
-        if column not in existing:
-            conn.execute(f"ALTER TABLE detections ADD COLUMN {column} {coltype}")
-            changed["columns_added"].append(column)
+    for table, columns in (("detections", ML_DETECTION_COLUMNS),
+                           ("raw_processes", ML_RAW_PROCESS_COLUMNS)):
+        existing = _table_columns(conn, table)
+        if not existing:
+            continue                    # table absent on a partially-built database
+        for column, coltype in columns:
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+                changed["columns_added"].append(f"{table}.{column}")
 
     # Only now that the columns exist can they be indexed.
     for statement in ML_DETECTION_INDEXES:
