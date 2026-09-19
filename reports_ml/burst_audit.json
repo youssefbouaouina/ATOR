@@ -1,0 +1,99 @@
+{
+  "phase": 8,
+  "population": {
+    "rows": 1716,
+    "positives": 205,
+    "groups": 105
+  },
+  "surviving_burst_features": [
+    "procs_within_5s",
+    "procs_within_60s",
+    "seconds_since_parent_start"
+  ],
+  "noise_floor": {
+    "fold_sd": 0.05148805686758825,
+    "ci_width": 0.09949999999999992
+  },
+  "runs": {
+    "T1 (all 81)": {
+      "n_features": 81,
+      "pr_auc": 0.9111,
+      "ci": [
+        0.8584,
+        0.9579
+      ],
+      "recall_at_fpr_0.01": 0.8488,
+      "per_fold": [
+        0.9334,
+        0.9802,
+        0.9084,
+        0.8501,
+        0.9654
+      ]
+    },
+    "T1 - all 3 burst": {
+      "n_features": 78,
+      "pr_auc": 0.9281,
+      "ci": [
+        0.8901,
+        0.9662
+      ],
+      "recall_at_fpr_0.01": 0.7902,
+      "per_fold": [
+        0.9604,
+        0.9638,
+        0.9474,
+        0.8129,
+        0.9705
+      ]
+    },
+    "T1 - procs_within_5s": {
+      "n_features": 80,
+      "pr_auc": 0.9061,
+      "ci": [
+        0.8539,
+        0.9568
+      ],
+      "recall_at_fpr_0.01": 0.7707,
+      "per_fold": [
+        0.9238,
+        0.9887,
+        0.9091,
+        0.8397,
+        0.9632
+      ]
+    },
+    "T1 - procs_within_60s": {
+      "n_features": 80,
+      "pr_auc": 0.9265,
+      "ci": [
+        0.8844,
+        0.9653
+      ],
+      "recall_at_fpr_0.01": 0.8244,
+      "per_fold": [
+        0.9416,
+        0.9612,
+        0.9325,
+        0.8311,
+        0.9724
+      ]
+    },
+    "T1 - seconds_since_parent_start": {
+      "n_features": 80,
+      "pr_auc": 0.9116,
+      "ci": [
+        0.8607,
+        0.9585
+      ],
+      "recall_at_fpr_0.01": 0.8439,
+      "per_fold": [
+        0.9319,
+        0.9829,
+        0.9056,
+        0.8569,
+        0.97
+      ]
+    }
+  }
+}

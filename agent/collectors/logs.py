@@ -39,26 +39,81 @@ def _windows():
     return out
 
 
+# How many <EventData><Data> nodes to keep per event.
+#
+# Was 20, which silently truncated Sysmon Event ID 1 (ProcessCreate): it carries 23 fields
+# and the ones lost were the last three - ParentProcessGuid/ParentImage/ParentCommandLine/
+# ParentUser - i.e. exactly the process-lineage fields that parent-child analysis and the
+# Layer 4.5 ML features depend on. 40 covers every Sysmon event type with headroom while
+# still bounding payload size.
+MAX_EVENT_DATA_FIELDS = 40
+
+# .NET exception types meaning "you are not allowed to read this log". Type names are
+# invariant across Windows display languages; Exception.Message is not.
+_PS_ACCESS_DENIED_EXC = {
+    "UnauthorizedAccessException",
+    "SecurityException",
+    "PrivilegeNotHeldException",
+}
+# ...and types meaning "nothing to read here", which is not an error at all.
+_PS_EMPTY_EXC = {
+    "EventLogNotFoundException",
+    "NoMatchingEventsException",
+    "EventLogException",
+}
+# Last-resort substring match for the returncode!=0 path, where we only have a localised
+# message. Covers the display languages we can reasonably anticipate; the ATOR_ERR path
+# above is the reliable one and does not depend on this list.
+_ACCESS_DENIED_SUBSTRINGS = (
+    "unauthorized", "denied", "access",          # en
+    "autoris", "refus",                           # fr  (non autorisée / accès refusé)
+    "verweigert", "zugriff",                      # de
+    "denegado", "permiso",                        # es
+    "negato", "accesso",                          # it
+    "negado", "acesso",                           # pt
+)
+
+
+def _is_access_denied_text(message):
+    low = (message or "").lower()
+    return any(token in low for token in _ACCESS_DENIED_SUBSTRINGS)
+
+
+def _classify_ps_error(exc_name, logname):
+    """Map a .NET exception type name to the collector's error contract."""
+    if exc_name in _PS_ACCESS_DENIED_EXC:
+        return [{"_error": f"access_denied:{logname}"}]
+    if exc_name in _PS_EMPTY_EXC:
+        return []          # log absent or empty - nothing collected, nothing wrong
+    return [{"_error": f"ps:{exc_name}"}]
+
+
 def _powershell_events(logname, cap, source_name):
     import subprocess
     try:
+        # The .NET exception *type name* is not localised, unlike Exception.Message.
+        # Emitting it lets us classify failures on any Windows display language.
         script = (
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; try { "
             f"Get-WinEvent -LogName '{logname}' -MaxEvents {cap} -ErrorAction Stop | "
             "Select-Object TimeCreated, Id, ProviderName, "
-            "@{n='Msg';e={$_.Message -replace \"`r`n\",' ' }} | ConvertTo-Json -Compress"
+            "@{n='Msg';e={$_.Message -replace \"`r`n\",' ' }} | ConvertTo-Json -Compress "
+            "} catch { Write-Output ('ATOR_ERR:' + $_.Exception.GetType().Name) }"
         )
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
         )
+        raw = (proc.stdout or "").strip()
+        if raw.startswith("ATOR_ERR:"):
+            return _classify_ps_error(raw[len("ATOR_ERR:"):].strip(), logname)
         if proc.returncode != 0:
-            err = proc.stderr.strip()[:120]
-            low = err.lower()
-            if "unauthorized" in low or "denied" in low or "access" in low:
+            err = (proc.stderr or "").strip()[:120]
+            if _is_access_denied_text(err):
                 # normalize permission failures to the tolerated marker
                 return [{"_error": f"access_denied:{logname}"}]
             return [{"_error": f"ps:{err}"}]
-        raw = proc.stdout.strip() or "[]"
+        raw = raw or "[]"
         data = json.loads(raw) if raw.startswith("[") else [json.loads(raw)] if raw.startswith("{") else []
     except Exception as exc:
         return [{"_error": f"{type(exc).__name__}:{exc}"}]
@@ -143,7 +198,7 @@ def _evtx_xml_to_dict(xml, source_name, filename):
                 computer = c_node.text
         data_nodes = root.findall(".//e:Event_Data/e:Data", ns)
         fields = {}
-        for d in data_nodes[:20]:
+        for d in data_nodes[:MAX_EVENT_DATA_FIELDS]:
             fields[d.attrib.get("Name", "data")] = d.text
         payload["fields"] = fields
         return {
@@ -212,7 +267,7 @@ def _journalctl(cap):
     try:
         proc = subprocess.run(
             ["journalctl", "-n", str(cap), "--no-pager", "-o", "short-iso"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
         for line in proc.stdout.splitlines():
             ts = None

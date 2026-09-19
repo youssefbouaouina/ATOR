@@ -293,14 +293,62 @@ def _run_engine(conn=None, rules_dir=None, host_ids=None, scan_history=False):
                 (processed_at, row["collection_id"]),
             )
 
-        enrich_result = attack_mapper.enrich_detections(conn, detection_ids=ids)
+        # ---- Layer 4.5 ML (optional, best-effort).
+        #
+        # Runs AFTER the deterministic detectors and is fully isolated from them: the import
+        # is lazy (the ML stack is optional - see requirements-ml.txt) and every failure mode
+        # inside returns an empty list. A machine without scikit-learn, or with a model
+        # trained against an older feature spec, keeps detecting with YARA/Sigma/IOC exactly
+        # as before. ML must never be able to break detection.
+        ml_ids, ml_error = [], None
+        ml_confidence, ml_risk_summary = {"scored": 0}, {}
+        ml_tactics = {"suggested": 0}
+        try:
+            from server.engine.ml_integration import (
+                insert_ml_detections, run_ml_anomaly_detection,
+            )
+            ml_hits = run_ml_anomaly_detection(conn, since_utc=_kv_get(conn, "ml_anomaly_last_run_utc"))
+            if ml_hits:
+                ml_ids = insert_ml_detections(conn, ml_hits)
+            _kv_set(conn, "ml_anomaly_last_run_utc",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+            # Component B scores EVERY unscored detection - rule-derived and ML-derived
+            # alike - so an analyst's queue is comparably ranked across sources.
+            from server.engine.ml_integration import score_detection_confidence
+            ml_confidence = score_detection_confidence(conn)
+
+            # Component C: tactic hints for ML findings that have no rule mapping. Gated at
+            # p>=0.80 and to well-supported classes; emits nothing when unsure.
+            from server.engine.ml_integration import suggest_tactics
+            ml_tactics = suggest_tactics(conn)
+
+            # Host risk is deterministic aggregation over whatever detections now exist.
+            from server.engine.ml_risk import update_all as update_risk_scores
+            risk = update_risk_scores(conn)
+            ml_risk_summary = {"hosts_scored": risk["hosts_scored"],
+                               "by_tier": risk["by_tier"]}
+        except ImportError as exc:
+            ml_error = f"ml-stack-unavailable: {exc}"
+        except Exception as exc:                 # noqa: BLE001 - deliberately broad
+            ml_error = f"{type(exc).__name__}: {exc}"
+
+        all_ids = ids + ml_ids
+        enrich_result = attack_mapper.enrich_detections(conn, detection_ids=all_ids)
+        # Preserve scan_history semantics (policy creation / demo re-scan the recent
+        # history); otherwise evaluate only the newly created detections.
         if scan_history:
             approvals = evaluate_policies(conn, detection_ids=None)
         else:
-            approvals = evaluate_policies(conn, detection_ids=ids)
+            approvals = evaluate_policies(conn, detection_ids=all_ids)
         _kv_set(conn, "engine_last_run_utc", processed_at)
         conn.commit()
         return {
+            "ml_detections": len(ml_ids),
+            "ml_confidence_scored": ml_confidence.get("scored", 0),
+            "ml_tactics_suggested": ml_tactics.get("suggested", 0),
+            "ml_host_risk": ml_risk_summary,
+            "ml_error": ml_error,
             "sigma_hits": len(sigma_hits),
             "total_new_detections": len(ids),
             "detections_deduped": max(0, len(batch_detections) - len(ids)),

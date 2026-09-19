@@ -1,25 +1,48 @@
-# Python
+# NOTE: '#' only starts a comment at the BEGINNING of a line. A trailing comment
+# on the same line as a pattern becomes part of the pattern and silently matches
+# nothing, so every comment here is on its own line.
+
+# ---- Python ----
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.ipynb_checkpoints/
 
-# Virtual environments
+# ---- Virtual environments ----
+# .venv/ was committed by an earlier contributor and hard-codes an absolute
+# interpreter path; untracked via `git rm -r --cached .venv` (still on disk).
 .venv/
+.venv-ml/
+.venv-ml313/
 venv/
+env/
 
-# Local databases and WAL sidecars
+# ---- Local databases and WAL sidecars ----
+# operational DFIR DB (ator_dfir.db) and the offline ML training DB (ml_train.db)
 *.db
 *.db-wal
 *.db-shm
 
-# Runtime artifacts
+# ---- ML artefacts (all regenerable; see docs/ML_PROGRESS.md) ----
+# trained joblib models - rebuilt by scripts/retrain_ml.py
+models/
+# downloaded third-party corpora (OTRF, ~85 MB) - refetched by ml.datasets.otrf
+data/external/
+data/interim/
+# generated evaluation figures under reports_ml/ ARE committed (deliverables);
+# only scratch output is ignored
+reports_ml/scratch/
+
+# ---- Runtime / local state ----
 spool/
+spool_test/
+agent/spool*/
 samples/
 reports_out/
 scripts/out/
 backups/
 *.log
 
-# Agent runtime config may hold API credentials once enrolled
+# ---- Agent runtime config may hold API credentials once enrolled ----
 agent/config.json

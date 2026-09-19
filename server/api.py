@@ -248,10 +248,13 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
         inserted = _upsert_observation(
             conn, "raw_processes",
             ["host_id", "collection_id", "collected_at_utc", "pid", "ppid", "name",
-             "cmdline", "exe_path", "sha256", "username"],
+             "cmdline", "exe_path", "sha256", "username", "create_time_utc"],
             [host["id"], collection_id, received, item.get("pid"), item.get("ppid"),
              item.get("name"), item.get("cmdline"), item.get("exe_path"),
-             item.get("sha256"), item.get("username")],
+             item.get("sha256"), item.get("username"),
+             # Older agents do not send this; NULL is the honest value for "not reported"
+             # and the ML timing features skip the row rather than inventing a time.
+             item.get("create_time_utc")],
             ["host_id", "pid", "name", "cmdline", "exe_path", "sha256"],
             received, collection_id,
         )
@@ -2014,3 +2017,195 @@ async def stream_agent_self(request: Request, interval: float = 5.0, limit: int 
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+# ---------------------------------------------------------------------------
+# Layer 4.5 ML endpoints.
+#
+# Every one of these degrades rather than fails when the optional ML stack is absent:
+# /status reports why, and the others return an explanatory 503. The DFIR pipeline is
+# unaffected either way.
+#
+# Scoring runs in a threadpool because it reads SQLite and runs a CPU-bound forest; doing
+# that on the event loop would stall every other request (ML_ARCHITECTURE section 8).
+# ---------------------------------------------------------------------------
+
+class MlScoreRequest(BaseModel):
+    host_id: int | None = None
+    top_k: int | None = Field(default=None, ge=1, le=200)
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    persist: bool = True
+
+
+def _ml_unavailable(status) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"error": "ml_unavailable", "reason": status.reason,
+                "missing_dependency": status.missing_dependency,
+                "hint": "pip install -r requirements-ml.txt, then "
+                        "python -m ml.training.train_anomaly --save"},
+    )
+
+
+@app.get("/api/v1/ml/status")
+def ml_status(conn=Depends(get_conn)):
+    """Is ML available, which models are loadable, and against which feature spec."""
+    from server.engine import ml_registry
+    return ml_registry.describe(conn)
+
+
+@app.get("/api/v1/ml/models")
+def ml_models(conn=Depends(get_conn)):
+    rows = conn.execute(
+        """SELECT id, name, version, model_type, feature_tier, feature_spec_sha256,
+                  trained_at_utc, training_rows, training_source, metrics_json,
+                  model_path, is_active
+           FROM ml_models ORDER BY id DESC"""
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metrics"] = json.loads(item.pop("metrics_json") or "{}")
+        except json.JSONDecodeError:
+            item["metrics"] = {}
+        out.append(item)
+    return {"models": out, "count": len(out)}
+
+
+@app.post("/api/v1/ml/score")
+async def ml_score(body: MlScoreRequest):
+    """Score processes now and (by default) persist the findings as detections."""
+    from starlette.concurrency import run_in_threadpool
+    from server.engine import ml_registry
+
+    status = ml_registry.dependencies_available()
+    if not status.available:
+        raise _ml_unavailable(status)
+
+    def _work():
+        from server.engine.ml_integration import (
+            insert_ml_detections, run_ml_anomaly_detection,
+        )
+        conn = database.connect()
+        try:
+            host_ids = [body.host_id] if body.host_id is not None else None
+            hits = run_ml_anomaly_detection(
+                conn, host_ids=host_ids, top_k=body.top_k, threshold=body.threshold)
+            ids = insert_ml_detections(conn, hits) if (hits and body.persist) else []
+            database.audit(conn, "analyst", "ml_manual_score",
+                           {"host_id": body.host_id, "found": len(hits),
+                            "persisted": len(ids)})
+            conn.commit()
+            return {
+                "scored": True,
+                "detections_found": len(hits),
+                "detections_persisted": len(ids),
+                "detection_ids": ids,
+                # Returned even when persist=False, so the UI can preview without writing.
+                "findings": [
+                    {k: v for k, v in hit.items() if k != "ml_explanation"} | {
+                        "explanation": json.loads(hit.get("ml_explanation") or "{}")}
+                    for hit in hits
+                ],
+            }
+        finally:
+            conn.close()
+
+    return await run_in_threadpool(_work)
+
+
+@app.get("/api/v1/ml/anomalies")
+def ml_anomalies(host_id: int | None = None, limit: int = 50, conn=Depends(get_conn)):
+    """ML anomaly detections with their scores and explanations, newest first."""
+    sql = """SELECT d.id, d.host_id, h.hostname, d.collection_id, d.rule_name, d.severity,
+                    d.summary, d.detected_at_utc, d.anomaly_score, d.confidence_score,
+                    d.suggested_tactics, d.ml_model_id, d.ml_explanation
+             FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
+             WHERE d.rule_type = 'ml_anomaly'"""
+    params: list = []
+    if host_id is not None:
+        sql += " AND d.host_id = ?"
+        params.append(host_id)
+    sql += " ORDER BY d.anomaly_score DESC, d.id DESC LIMIT ?"
+    params.append(max(1, min(limit, 500)))
+
+    out = []
+    for row in conn.execute(sql, params):
+        item = dict(row)
+        for field in ("ml_explanation", "suggested_tactics"):
+            try:
+                item[field] = json.loads(item[field]) if item[field] else None
+            except (json.JSONDecodeError, TypeError):
+                pass
+        out.append(item)
+    return {"anomalies": out, "count": len(out)}
+
+
+@app.get("/api/v1/ml/host-risk")
+def ml_host_risk_all(conn=Depends(get_conn)):
+    """Risk score for every host, worst first - the endpoints-page ordering."""
+    rows = conn.execute(
+        """SELECT r.host_id, h.hostname, h.os_type, r.score, r.tier, r.last_computed_utc,
+                  r.breakdown_json
+           FROM host_risk_scores r LEFT JOIN hosts h ON h.id = r.host_id
+           ORDER BY r.score DESC"""
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["breakdown"] = json.loads(item.pop("breakdown_json") or "{}")
+        except json.JSONDecodeError:
+            item["breakdown"] = {}
+        out.append(item)
+    return {"hosts": out, "count": len(out)}
+
+
+@app.get("/api/v1/ml/host-risk/{host_id}")
+def ml_host_risk_one(host_id: int, conn=Depends(get_conn)):
+    from server.engine import ml_risk
+    stored = ml_risk.get_host_risk(conn, host_id)
+    if stored is None:
+        # Never computed yet - compute on demand rather than 404, so the UI always has
+        # something to show for a freshly enrolled host.
+        return ml_risk.compute_host_risk(conn, host_id) | {"persisted": False}
+    return stored | {"persisted": True}
+
+
+@app.post("/api/v1/ml/host-risk/recompute")
+async def ml_host_risk_recompute():
+    from starlette.concurrency import run_in_threadpool
+
+    def _work():
+        from server.engine import ml_risk
+        conn = database.connect()
+        try:
+            result = ml_risk.update_all(conn)
+            database.audit(conn, "analyst", "ml_risk_recompute",
+                           {"hosts": result["hosts_scored"]})
+            conn.commit()
+            return {"hosts_scored": result["hosts_scored"], "by_tier": result["by_tier"],
+                    "top": result["scores"][:10]}
+        finally:
+            conn.close()
+
+    return await run_in_threadpool(_work)
+
+
+@app.get("/api/v1/ml/drift")
+def ml_drift_status(limit: int = 50, conn=Depends(get_conn)):
+    """Most recent feature-drift findings (PSI) recorded by the retrain job."""
+    rows = conn.execute(
+        """SELECT computed_at_utc, model_id, feature_name, psi, verdict
+           FROM ml_drift_log ORDER BY computed_at_utc DESC, psi DESC LIMIT ?""",
+        (max(1, min(limit, 500)),)).fetchall()
+    entries = [dict(r) for r in rows]
+    latest = entries[0]["computed_at_utc"] if entries else None
+    shifted = [e for e in entries if e["verdict"] == "shifted"]
+    return {
+        "entries": entries,
+        "count": len(entries),
+        "last_computed_utc": latest,
+        "shifted_features": len(shifted),
+        "retrain_recommended": bool(shifted),
+        "thresholds": {"stable_below": 0.10, "shifted_above": 0.25},
+    }

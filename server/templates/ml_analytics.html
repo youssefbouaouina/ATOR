@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title %}ML Analytics{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0">ML Behavioural Analytics <span class="text-muted small">(Layer 4.5)</span></h4>
+  <div>
+    <button class="btn btn-sm btn-outline-primary" id="mlScoreBtn">Score now</button>
+    <button class="btn btn-sm btn-outline-secondary" id="mlRiskBtn">Recompute risk</button>
+  </div>
+</div>
+
+{% if not ml.available %}
+<div class="alert alert-warning">
+  <strong>ML layer unavailable.</strong> {{ ml.reason }}<br>
+  <span class="small mono">pip install -r requirements-ml.txt &amp;&amp;
+        python -m ml.training.train_anomaly --save</span>
+  <div class="small mt-2 text-muted">
+    Detection is unaffected &mdash; YARA, Sigma and IOC correlation continue to run normally.
+  </div>
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ models -->
+<div class="row g-3 mb-3">
+  <div class="col-lg-7">
+    <div class="card ator-card h-100">
+      <div class="card-header d-flex justify-content-between">
+        <span>Models</span>
+        <span class="mono small text-muted" title="feature contract hash">
+          spec {{ (ml.feature_spec_sha256 or '')[:12] }}…</span>
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Component</th><th>Tier</th><th>Status</th><th>Trained</th><th>Quality</th></tr></thead>
+          <tbody>
+          {% for m in ml.models %}
+            <tr>
+              <td class="text-capitalize">{{ m.model_type }}</td>
+              <td><span class="badge bg-secondary">{{ m.tier|upper }}</span></td>
+              <td>
+                {% if not m.loadable %}
+                  <span class="badge bg-danger" title="{{ m.note }}">refused</span>
+                {% elif m.model_type == 'tactic' %}
+                  {# Component C was NOT deployed at Phase 5 (50.8% accuracy vs a 40.5%
+                     majority baseline). Phase 7a's label recovery moved it to 77.6% precision
+                     at p>=0.80 on well-supported classes, so it now ships - but only as a
+                     gated hint: confidence >= 0.50, probability >= 0.80, and only tactics
+                     with >= 30 training examples. #}
+                  <span class="badge bg-warning text-dark"
+                        title="Gated hint only: Component B confidence >= {{ ml.tactic_gate.min_confidence if ml.tactic_gate else '0.50' }},
+                               probability >= {{ ml.tactic_gate.min_probability if ml.tactic_gate else '0.80' }}, and only tactics with
+                               >= {{ ml.tactic_gate.min_support if ml.tactic_gate else '30' }} training examples.{% if ml.tactic_gate %}
+                               Measured {{ ml.tactic_gate.precision_pct }}% precision at that threshold,
+                               over {{ ml.tactic_gate.coverage_pct }}% of attacks.{% endif %}">
+                    gated hint</span>
+                {% else %}
+                  <span class="badge bg-success">active</span>
+                {% endif %}
+              </td>
+              <td class="mono small">{{ (m.trained_at_utc or '-')[:16] }}</td>
+              <td class="mono small">
+                {% if m.metrics and m.metrics.pr_auc %}PR-AUC {{ '%.3f'|format(m.metrics.pr_auc) }}
+                {% else %}&mdash;{% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="text-muted p-3">
+              No trained models. Run <span class="mono">python -m ml.training.train_anomaly --save</span>
+            </td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if ml.feature_counts %}
+      <div class="card-footer small text-muted">
+        {{ ml.feature_counts.total }} features &mdash;
+        {{ ml.feature_counts.t1 }} available on every host,
+        {{ ml.feature_counts.t2 }} needing Sysmon,
+        {{ ml.feature_counts.t3 }} needing PowerShell module logging.
+        Tier is chosen per host from the telemetry actually present.
+        A model trained against a different feature spec is refused rather than used.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------- host risk -->
+  <div class="col-lg-5">
+    <div class="card ator-card h-100">
+      <div class="card-header">Host risk</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Host</th><th>Score</th><th>Tier</th><th>Drivers</th></tr></thead>
+          <tbody>
+          {% for h in risk %}
+            <tr>
+              <td>{{ h.hostname or ('host ' ~ h.host_id) }}</td>
+              <td class="mono">{{ '%.1f'|format(h.score) }}</td>
+              <td><span class="badge badge-{{ h.tier }}">{{ h.tier }}</span></td>
+              <td class="small text-muted">
+                {{ h.breakdown.get('distinct_tactics', [])|length }} tactic(s),
+                {{ h.breakdown.get('detections_considered', 0) }} finding(s)
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="text-muted p-3">Not computed yet.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer small text-muted">
+        Deterministic: severity &times; recency decay + tactic diversity + capped ML contribution.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- --------------------------------------------------------------- anomalies -->
+<div class="card ator-card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Anomaly triage queue</span>
+    <span class="small text-muted">
+      ranked by how unusual the process is &mdash; a queue to review, not an alarm
+    </span>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>Host</th><th>Process</th><th>Anomaly</th><th>Confidence</th>
+        <th>Sev</th><th>ML suggests</th><th>Why it was flagged</th><th class="mono">Time</th>
+      </tr></thead>
+      <tbody>
+      {% for a in anomalies %}
+        <tr>
+          <td class="small">{{ a.hostname or a.host_id }}</td>
+          <td class="mono small">{{ a.rule_name|replace('ML Anomaly: ', '') }}</td>
+          <td>
+            <span class="badge bg-info text-dark mono">
+              {{ '%.3f'|format(a.anomaly_score or 0) }}</span>
+          </td>
+          <td>
+            {% if a.confidence_score is not none %}
+              <span class="badge badge-{{ a.confidence_band }} mono">
+                {{ '%.2f'|format(a.confidence_score) }}</span>
+            {% else %}<span class="text-muted small">unscored</span>{% endif %}
+          </td>
+          <td><span class="badge badge-{{ a.severity }}">{{ a.severity }}</span></td>
+          <td class="small">
+            {% if a.suggested_tactics and a.suggested_tactics.suggestions %}
+              {% for t in a.suggested_tactics.suggestions %}
+                <span class="badge bg-secondary"
+                      title="ML hint, not an authoritative ATT&CK mapping{% if ml.tactic_gate %} - measured {{ ml.tactic_gate.precision_pct }}% precision at this threshold{% endif %}">
+                  {{ t.tactic }} {{ '%.0f'|format(t.probability * 100) }}%</span>
+              {% endfor %}
+            {% else %}<span class="text-muted">&mdash;</span>{% endif %}
+          </td>
+          <td class="small text-muted">
+            {% if a.ml_explanation and a.ml_explanation.top_features %}
+              {% for f in a.ml_explanation.top_features[:3] %}
+                <span class="badge bg-light text-dark border mono"
+                      title="deviation from baseline, in robust units">
+                  {{ f.feature }} &times;{{ f.deviation }}</span>
+              {% endfor %}
+            {% else %}&mdash;{% endif %}
+          </td>
+          <td class="mono small">{{ (a.detected_at_utc or '')[:19] }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8" class="text-muted p-3">
+          No ML findings yet. Press <b>Score now</b>, or run the engine.
+        </td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer small text-muted">
+    <b>Anomaly</b> = percentile against this estate's benign baseline (1.000 = most unusual seen).
+    <b>Confidence</b> = calibrated P(malicious) from the supervised model.
+    A high anomaly with a low confidence usually means unusual-but-legitimate software.
+    <b>ML suggests</b> is a tactic <i>hint</i>{% if ml.tactic_gate %}
+    (measured <b>{{ ml.tactic_gate.precision_pct }}% precision</b> at this gate, covering
+    {{ ml.tactic_gate.coverage_pct }}% of attacks){% endif %}, shown only when confidence
+    &ge; {{ ml.tactic_gate.min_confidence if ml.tactic_gate else 0.50 }} and only for tactics
+    with enough training support &mdash; the tactic model is trained on attacks alone, so
+    asking it about a benign process is out of distribution.
+    These are statistical findings, not rule matches &mdash; verify before acting.
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------- drift -->
+<div class="card ator-card">
+  <div class="card-header d-flex justify-content-between">
+    <span>Feature drift (PSI)</span>
+    {% if drift.retrain_recommended %}
+      <span class="badge bg-warning text-dark">{{ drift.shifted_features }} feature(s) shifted</span>
+    {% else %}
+      <span class="badge bg-success">stable</span>
+    {% endif %}
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm mb-0">
+      <thead><tr><th>Feature</th><th>PSI</th><th>Verdict</th><th class="mono">Computed</th></tr></thead>
+      <tbody>
+      {% for d in drift.entries[:12] %}
+        <tr>
+          <td class="mono small">{{ d.feature_name }}</td>
+          <td class="mono">{{ '%.3f'|format(d.psi) }}</td>
+          <td>
+            <span class="badge {{ 'bg-danger' if d.verdict=='shifted' else 'bg-warning text-dark' }}">
+              {{ d.verdict }}</span>
+          </td>
+          <td class="mono small">{{ (d.computed_at_utc or '')[:16] }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="text-muted p-3">
+          No drift measured yet. Run
+          <span class="mono">python scripts/retrain_ml.py --check-drift</span>
+        </td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer small text-muted">
+    PSI compares the distribution the models were trained on with what they are being served.
+    &lt;0.10 stable &middot; 0.10&ndash;0.25 moderate &middot; &gt;0.25 shifted (retrain).
+    A jump in missingness usually means a collector broke.
+  </div>
+</div>
+
+<script>
+(function () {
+  function busy(btn, on, label) {
+    btn.disabled = on;
+    btn.textContent = on ? 'Working…' : label;
+  }
+  const scoreBtn = document.getElementById('mlScoreBtn');
+  if (scoreBtn) scoreBtn.addEventListener('click', async () => {
+    busy(scoreBtn, true, 'Score now');
+    try {
+      const r = await fetch('/api/v1/ml/score', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({persist: true})
+      });
+      const body = await r.json();
+      if (!r.ok) { alert('ML unavailable: ' + (body.detail?.reason || r.status)); }
+      else { location.reload(); }
+    } catch (e) { alert('Request failed: ' + e); }
+    finally { busy(scoreBtn, false, 'Score now'); }
+  });
+
+  const riskBtn = document.getElementById('mlRiskBtn');
+  if (riskBtn) riskBtn.addEventListener('click', async () => {
+    busy(riskBtn, true, 'Recompute risk');
+    try {
+      await fetch('/api/v1/ml/host-risk/recompute', {method: 'POST'});
+      location.reload();
+    } catch (e) { alert('Request failed: ' + e); }
+    finally { busy(riskBtn, false, 'Recompute risk'); }
+  });
+})();
+</script>
+{% endblock %}

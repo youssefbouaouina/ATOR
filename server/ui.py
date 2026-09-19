@@ -97,19 +97,78 @@ def register_ui(target_app):
             "detection_total": detection_total, "counts": counts, "page": "investigation",
         })
 
+    @target_app.get("/ml", response_class=HTMLResponse)
+    def ml_analytics(request: Request, conn=Depends(database.connect)):
+        """Layer 4.5 ML dashboard: models, triage queue, host risk, drift.
+
+        Degrades rather than fails when the optional ML stack is absent - the template
+        renders an explanatory banner and the rest of the dashboard is unaffected.
+        """
+        from server.engine import ml_registry, ml_triage
+
+        try:
+            ml = ml_registry.describe(conn)
+        except Exception as exc:                     # noqa: BLE001
+            ml = {"available": False, "reason": f"{type(exc).__name__}: {exc}", "models": []}
+
+        anomalies = []
+        for row in conn.execute(
+            """SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
+                      d.detected_at_utc, d.anomaly_score, d.confidence_score,
+                      d.ml_explanation, d.suggested_tactics
+               FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
+               WHERE d.rule_type = 'ml_anomaly'
+               ORDER BY d.anomaly_score DESC, d.id DESC LIMIT 40"""):
+            item = dict(row)
+            for field in ("ml_explanation", "suggested_tactics"):
+                try:
+                    item[field] = json.loads(item[field]) if item[field] else {}
+                except (json.JSONDecodeError, TypeError):
+                    item[field] = {}
+            item["confidence_band"] = ml_triage.confidence_band(item.get("confidence_score"))
+            anomalies.append(item)
+
+        risk = []
+        for row in conn.execute(
+            """SELECT r.host_id, h.hostname, r.score, r.tier, r.breakdown_json
+               FROM host_risk_scores r LEFT JOIN hosts h ON h.id = r.host_id
+               ORDER BY r.score DESC LIMIT 20"""):
+            item = dict(row)
+            try:
+                item["breakdown"] = json.loads(item.pop("breakdown_json") or "{}")
+            except json.JSONDecodeError:
+                item["breakdown"] = {}
+            risk.append(item)
+
+        entries = [dict(r) for r in conn.execute(
+            """SELECT computed_at_utc, feature_name, psi, verdict FROM ml_drift_log
+               ORDER BY computed_at_utc DESC, psi DESC LIMIT 20""")]
+        drift = {
+            "entries": entries,
+            "shifted_features": sum(1 for e in entries if e["verdict"] == "shifted"),
+            "retrain_recommended": any(e["verdict"] == "shifted" for e in entries),
+        }
+        conn.close()
+        return tpl.TemplateResponse(request, "ml_analytics.html", {
+            "ml": ml, "anomalies": anomalies, "risk": risk, "drift": drift, "page": "ml",
+        })
+
     @target_app.get("/endpoints", response_class=HTMLResponse)
     def endpoints(request: Request, conn=Depends(database.connect)):
         hosts = [dict(r) for r in conn.execute(
             """SELECT h.*,
                       h.agent_desired_state,
                       (SELECT COUNT(*) FROM detections d WHERE d.host_id=h.id) AS detection_count,
+                      r.score AS risk_score, r.tier AS risk_tier,
                       (SELECT status FROM enrollment_requests er
                        WHERE er.hostname = h.hostname AND er.status IN ('pending','accepted','enrolled')
                        ORDER BY er.requested_at_utc DESC LIMIT 1) AS enrollment_status,
                       (SELECT enrollment_token FROM enrollment_requests er
                        WHERE er.hostname = h.hostname AND er.status = 'accepted'
                        ORDER BY er.requested_at_utc DESC LIMIT 1) AS enrollment_token
-               FROM hosts h ORDER BY h.id"""
+               FROM hosts h
+               LEFT JOIN host_risk_scores r ON r.host_id = h.id
+               ORDER BY COALESCE(r.score, -1) DESC, h.id"""
         )]
         from server.api import classify_agent_status
         for h in hosts:

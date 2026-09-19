@@ -19,7 +19,7 @@ def collect():
 
 def _run(args):
     try:
-        proc = subprocess.run(["docker"] + args, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(["docker"] + args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if proc.returncode != 0:
             return None
         return proc.stdout
