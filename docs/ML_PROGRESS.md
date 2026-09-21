@@ -23,11 +23,20 @@
 | **5 — Components B & C, risk, drift** | ✅ **done & verified** |
 | **6 — Dashboard, model cards, reports** | ✅ **done & verified** |
 | **7 — Improvements (labels, features, tiers)** | ✅ done — **but 7b.2 was withdrawn in Phase 8**, see below |
-| **8 — Train/serve correction** | ✅ **done & verified** — `393 passed, 1 skipped, 0 failed` |
+| **8 — Train/serve correction** | ✅ **done & verified** |
+| **9 — DFIR-only merge, dedupe fixes, security UI** | ✅ **done & verified** — `513 passed, 1 skipped, 0 failed` |
 
-**Status: all eight phases complete.** Phases 0–6 are committed and pushed to `origin/ML`
-(commits `1e3669d`..`2106b2d`); Phases 7 and 8 follow. `origin/main` is deliberately
-untouched. Still awaiting a review in the UI.
+**Status: all nine phases complete and pushed to `origin/ML`.** youssef merged ML into
+`main` on 2026-09-19; `ML` now contains all of his DFIR-only work (fast-forwarded to `main`,
+see `docs/ML_MERGE_DFIR_NOTES.md`). The user pushes to `ML` only; youssef merges to `main`.
+
+> **After the DFIR-only merge (2026-09-21), read `docs/ML_MERGE_DFIR_NOTES.md` first.** The
+> merged branch was green while four real defects were live - two in the DFIR ingest (distinct
+> same-second log events collapsed into one; a reused PID inherited the old process's parent
+> and start time), two in the ML layer (a long-running suspicious process re-reported every
+> sweep; Sysmon features vanishing after a process's first sweep). All four were reproduced
+> through the real ingest endpoint and fixed with tests. The ML page was rewritten for
+> security analysts as **Threat Hunting**.
 
 > **Read this before trusting any Phase 7 number.** Phase 7b.2 reported five "burst" features
 > as that phase's headline win (+0.0134 PR-AUC). The PSI drift monitor later showed all five
@@ -42,7 +51,7 @@ untouched. Still awaiting a review in the UI.
 ```bash
 .venv-ml313/Scripts/python.exe -m uvicorn server.app:app --host 127.0.0.1 --port 8000
 ```
-Then open <http://127.0.0.1:8000/ml> — the **ML Analytics** tab. "Score now" runs the models
+Then open <http://127.0.0.1:8000/ml> — the **Threat Hunting** tab (formerly ML Analytics). "Score now" runs the models
 against the current database; "Recompute risk" refreshes host scores. ML findings also appear
 on **Investigation** (Src + Conf columns) and **Endpoints** (Risk column).
 
@@ -564,6 +573,29 @@ stated subject, not a detour from it.
 ---
 
 ## Changelog
+
+- **2026-09-21** — **Phase 9: DFIR-only merge, dedupe fixes, security-oriented UI.**
+  `ML` fast-forwarded to `main` (= DFIR-only + ML, with youssef's conflict resolutions),
+  after backing up and restoring the 26 runtime files the merge untracks (live DB hash
+  unchanged). Post-merge suite green (449 passed) with four live defects, each reproduced
+  through `/api/v1/ingest` and fixed: log dedupe key v2 adds a payload hash (distinct events
+  in one second were collapsed - agent timestamps have 1 s resolution); process dedupe key v2
+  adds `create_time_utc` (a reused PID inherited the old instance's parent and start time),
+  with an in-place v1 -> v2 index upgrade at startup; ML findings keyed on process identity
+  with youssef's `hit_count`/`last_seen_utc` recurrence convention (a long-running process
+  was re-reported every sweep), counting a sighting only when it is newer than the last
+  (found by clicking "Run hunt now" repeatedly); T1 served by default because insert-once
+  logs + moving process rows served T2 models `sysmon_available = 0` from a process's second
+  sweep on. Also: pd.NA written as the literal "<NA>" into finding evidence (Phase 8 Int64
+  side effect); `ATOR/` re-ignored. The ML page became **Threat Hunting**:
+  `server/engine/ml_vocabulary.py` translates every model output into analyst language
+  (priority P1-P4 from threat likelihood, rarity, ATT&CK IDs, indicator sentences with
+  direction and strength, engine lab results generated from artefact metrics, data health),
+  with a click-through evidence panel per lead; the data-science view is kept, collapsed.
+  `explain()` now records deviation direction. New tests: `test_dedupe_identity.py`,
+  `test_ml_vocabulary.py` (including a guard that fails the build when a feature has no
+  analyst-facing label). Open items: join Sysmon events across collections so T2 can be
+  default again; consider excluding OS pseudo-processes (PID 0) from scoring.
 
 - **2026-09-18 (2)** — **Phase 8: train/serve correction.** The PSI drift monitor, re-run
   after the Phase 7 spec change, found that all five Phase 7b.2 burst features were NaN on

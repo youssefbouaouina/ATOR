@@ -68,33 +68,52 @@ def ml_rows(tmp_db, seeded_host):
 # --------------------------------------------------------------------------- the ML page
 
 class TestMlPage:
+    """The page is written for security analysts; see server/engine/ml_vocabulary.py."""
+
     def test_renders_with_no_data_at_all(self, ui_client):
         """A fresh install must show an empty page, not an error."""
         response = ui_client.get("/ml")
         assert response.status_code == 200
-        assert "ML Behavioural Analytics" in response.text
+        assert "Behavioural Threat Hunting" in response.text
+        assert "No behavioural leads yet" in response.text
 
     def test_renders_with_data(self, ui_client, ml_rows):
         body = ui_client.get("/ml").text
         assert "evil.exe" in body
-        assert "0.999" in body or "0.9987" in body      # anomaly score
-        assert "cmdline_entropy" in body                # explanation surfaced
-        assert "high" in body                           # risk tier
+        assert "Top 0.1%" in body                       # rarity, from anomaly score 0.9987
+        assert "0.9987" in body                         # raw score kept for the technical line
+        # this fixture's explanation predates stored direction -> the neutral wording
+        assert "Unusual command-line content" in body   # explanation, in plain language
+        assert "High" in body                           # host risk level
 
     def test_shows_explanations_not_bare_scores(self, ui_client, ml_rows):
         """An unexplained ML alert is unactionable."""
         body = ui_client.get("/ml").text
         assert "Why it was flagged" in body
+        assert "Unusual command-line content" in body
+        # the raw feature name survives only as a tooltip for technical readers
         assert "cmdline_entropy" in body
 
     def test_warns_the_reading_is_statistical(self, ui_client, ml_rows):
         body = ui_client.get("/ml").text
         assert "not rule matches" in body or "not a rule match" in body
 
-    def test_drift_panel_renders(self, ui_client, ml_rows):
+    def test_data_health_panel_renders(self, ui_client, ml_rows):
         body = ui_client.get("/ml").text
-        assert "Feature drift" in body
+        assert "Data health" in body
+        assert "Degraded" in body                       # PSI 8.67 -> shifted
+        # hour_of_day has no vocabulary entry (it left the spec in Phase 7): the page must
+        # still render it readably rather than fail or show only the raw name.
+        assert "Hour of day" in body
         assert "hour_of_day" in body
+
+    def test_security_view_does_not_lead_with_data_science_metrics(self, ui_client, ml_rows):
+        """PR-AUC and friends live in the collapsed technical section, not the analyst view."""
+        body = ui_client.get("/ml").text
+        analyst_view, _, technical = body.partition("Technical details (for data scientists)")
+        assert technical, "the technical section must still exist"
+        for jargon in ("PR-AUC", "Precision@25", "feature spec"):
+            assert jargon not in analyst_view, f"{jargon!r} shown outside the technical section"
 
     def test_degrades_when_ml_stack_missing(self, ui_client, monkeypatch):
         from server.engine import ml_registry
@@ -171,13 +190,13 @@ class TestInvestigationConfidence:
     # dedicated ML Analytics page (/ml) instead of inline on /investigation.
     def test_confidence_column_rendered(self, ui_client, ml_rows):
         body = ui_client.get("/ml").text
-        assert "Confidence" in body
-        assert "0.83" in body           # the confidence_score we inserted
+        assert "Threat likelihood" in body
+        assert "High &middot; 83%" in body or "High · 83%" in body   # confidence 0.83
 
     def test_ml_source_is_visually_distinct(self, ui_client, ml_rows):
         body = ui_client.get("/ml").text
-        # ML findings live in their own anomaly triage queue, separate from rule hits.
-        assert "Anomaly triage queue" in body
+        # ML findings live in their own queue of behavioural leads, separate from rule hits.
+        assert "Behavioural leads" in body
         assert "evil.exe" in body
 
     def test_unscored_detection_shows_a_dash_not_zero(self, ui_client, tmp_db, seeded_host):

@@ -151,13 +151,18 @@ class AnomalyModel:
         # Robust scale per feature from the baseline; guard zero-variance columns.
         spread = np.median(np.abs(filled - centre), axis=0) * 1.4826
         spread = np.where(spread <= 1e-9, 1.0, spread)
-        deviation = np.abs(filled - centre) / spread
+        signed = filled - centre
+        deviation = np.abs(signed) / spread
 
         out = []
-        for row in deviation:
+        for row, sign in zip(deviation, signed):
             order = np.argsort(row)[::-1][:top_k]
             out.append([
-                {"feature": self.feature_names[i], "deviation": round(float(row[i]), 3)}
+                # `direction` lets the UI say "spawns MORE children than normal" instead of
+                # "unusual child count" - the difference between an actionable indicator
+                # and a vague one. Additive: older findings without it fall back to neutral.
+                {"feature": self.feature_names[i], "deviation": round(float(row[i]), 3),
+                 "direction": "higher" if sign[i] > 0 else "lower"}
                 for i in order if np.isfinite(row[i]) and row[i] > 0
             ])
         return out

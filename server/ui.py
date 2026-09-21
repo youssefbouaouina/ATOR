@@ -105,27 +105,44 @@ def register_ui(target_app):
         renders an explanatory banner and the rest of the dashboard is unaffected.
         """
         from server.engine import ml_registry, ml_triage
+        from server.engine import ml_vocabulary as vocab
 
         try:
             ml = ml_registry.describe(conn)
         except Exception as exc:                     # noqa: BLE001
             ml = {"available": False, "reason": f"{type(exc).__name__}: {exc}", "models": []}
 
+        # Leads are worked in threat-likelihood order (how much the process resembles known
+        # attack activity), then by rarity. Unscored leads sort last rather than as zero.
         anomalies = []
         for row in conn.execute(
             """SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
                       d.detected_at_utc, d.anomaly_score, d.confidence_score,
-                      d.ml_explanation, d.suggested_tactics
+                      d.ml_explanation, d.suggested_tactics,
+                      COALESCE(d.hit_count, 1) AS hit_count, d.last_seen_utc
                FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
                WHERE d.rule_type = 'ml_anomaly'
-               ORDER BY d.anomaly_score DESC, d.id DESC LIMIT 40"""):
+               ORDER BY d.confidence_score IS NULL, d.confidence_score DESC,
+                        d.anomaly_score DESC, d.id DESC LIMIT 60"""):
             item = dict(row)
-            for field in ("ml_explanation", "suggested_tactics"):
+            for field in ("ml_explanation", "suggested_tactics", "summary"):
                 try:
                     item[field] = json.loads(item[field]) if item[field] else {}
                 except (json.JSONDecodeError, TypeError):
                     item[field] = {}
+                if not isinstance(item[field], dict):
+                    item[field] = {}
             item["confidence_band"] = ml_triage.confidence_band(item.get("confidence_score"))
+            item["process"] = (item["summary"].get("name")
+                               or (item.get("rule_name") or "").replace("ML Anomaly: ", ""))
+            item["indicators"] = vocab.indicators(item["ml_explanation"])
+            item["likelihood"] = vocab.likelihood(item.get("confidence_score"))
+            item["rarity"] = vocab.rarity(item.get("anomaly_score"))
+            item["priority"] = vocab.priority(item.get("confidence_score"),
+                                              item.get("anomaly_score"))
+            item["tactics"] = [
+                vocab.tactic(t.get("tactic")) | {"pct": round(float(t.get("probability") or 0) * 100)}
+                for t in (item["suggested_tactics"].get("suggestions") or []) if isinstance(t, dict)]
             anomalies.append(item)
 
         risk = []
@@ -138,19 +155,40 @@ def register_ui(target_app):
                 item["breakdown"] = json.loads(item.pop("breakdown_json") or "{}")
             except json.JSONDecodeError:
                 item["breakdown"] = {}
+            item["tactic_names"] = [vocab.tactic(t)["name"]
+                                    for t in item["breakdown"].get("distinct_tactics") or []]
             risk.append(item)
 
         entries = [dict(r) for r in conn.execute(
             """SELECT computed_at_utc, feature_name, psi, verdict FROM ml_drift_log
                ORDER BY computed_at_utc DESC, psi DESC LIMIT 20""")]
+        for entry in entries:
+            entry["label"] = vocab.feature_label(entry["feature_name"])
+            entry["health"] = vocab.health(entry["verdict"])
+        shifted = sum(1 for e in entries if e["verdict"] == "shifted")
+        moderate = sum(1 for e in entries if e["verdict"] == "moderate")
         drift = {
             "entries": entries,
-            "shifted_features": sum(1 for e in entries if e["verdict"] == "shifted"),
-            "retrain_recommended": any(e["verdict"] == "shifted" for e in entries),
+            "shifted_features": shifted,
+            "retrain_recommended": shifted > 0,
+            "overall": vocab.health("shifted" if shifted else "moderate" if moderate
+                                    else "stable") if entries else None,
+        }
+
+        engines = vocab.engine_cards(ml)
+        kpis = {
+            "leads": len(anomalies),
+            "high": sum(1 for a in anomalies if a["likelihood"] and a["likelihood"]["raw"] >= 0.5),
+            "with_tactic": sum(1 for a in anomalies if a["tactics"]),
+            "hosts_elevated": sum(1 for r in risk if r.get("tier") in ("high", "critical")),
+            "hosts_scored": len(risk),
+            "engines_online": sum(1 for e in engines if e["status"].startswith("Online")),
+            "engines_total": len(engines),
         }
         conn.close()
         return tpl.TemplateResponse(request, "ml_analytics.html", {
             "ml": ml, "anomalies": anomalies, "risk": risk, "drift": drift, "page": "ml",
+            "engines": engines, "kpis": kpis,
         })
 
     @target_app.get("/endpoints", response_class=HTMLResponse)
