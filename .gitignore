@@ -46,3 +46,9 @@ backups/
 
 # ---- Agent runtime config may hold API credentials once enrolled ----
 agent/config.json
+
+# ---- Duplicate clone accidentally nested inside this working tree ----
+# ATOR/ is a second clone of this same repo. It was ignored on the ML branch and the
+# line was lost in the DFIR-only/ML merge. Without it, `git add -A` would stage the
+# nested repository as an embedded gitlink. Ignored, not deleted - owner's call.
+ATOR/
