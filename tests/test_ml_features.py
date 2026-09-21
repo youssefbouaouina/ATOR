@@ -404,9 +404,10 @@ class TestSysmonTierTwo:
         import json
         conn = database.connect(db_path)
         # This synthetic corpus emits several Sysmon events sharing one timestamp
-        # and event id, which the DFIR live-ingestion raw_logs dedupe index (merged
-        # from main) would collapse. Feature extraction wants them all, so drop it.
-        conn.execute("DROP INDEX IF EXISTS ux_raw_logs_dedupe")
+        # and event id, inserted directly rather than through ingest (so without a
+        # payload hash). The unique dedupe indexes would reject them; feature
+        # extraction wants them all, so drop every dedupe index, v1 and v2.
+        database.drop_dedupe_indexes(conn)
         ts = "2026-03-01T22:30:00+00:00"
 
         def add_log(eid, fields):

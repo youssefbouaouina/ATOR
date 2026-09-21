@@ -354,6 +354,15 @@ MIGRATIONS = {
         ("first_seen_utc", "TEXT"),
         ("last_seen_utc", "TEXT"),
         ("observation_count", "INTEGER NOT NULL DEFAULT 1"),
+        # Part of the v2 process identity (see DEDUPE_INDEXES), so it has to
+        # exist before the dedupe indexes are built. The ML overlay also adds
+        # it, but migrate() runs after the indexes; declaring it here keeps a
+        # fresh store from failing to build ux_raw_processes_dedupe_v2.
+        ("create_time_utc", "TEXT"),
+    ),
+    "raw_logs": (
+        # sha256 of the canonical event payload - part of the v2 log identity.
+        ("payload_sha256", "TEXT"),
     ),
     "raw_connections": (
         ("remote_domain", "TEXT"),
@@ -375,14 +384,34 @@ MIGRATIONS = {
 
 # Natural-key uniqueness so repeated agent observations update one row instead
 # of inserting a new one every collection cycle.
+#
+# The logs and processes keys are v2. Their v1 keys were too coarse and merged
+# records that are genuinely different (reproduced through the real ingest
+# endpoint; see tests/test_dedupe_identity.py):
+#
+#   raw_logs v1       (host, source, second, event_id, provider). The agent
+#                     records event times to the SECOND, so distinct events in
+#                     the same second collapsed into one: `whoami`, `net user`
+#                     and `ipconfig` launched together were stored as a single
+#                     process-creation event. v2 adds a hash of the payload.
+#                     Re-sent copies of an event are byte-identical, so they are
+#                     still dropped exactly as before.
+#   raw_processes v1  (host, pid, name, cmdline, exe, sha256). A NEW process
+#                     that reused a PID with an identical command line was
+#                     folded into the old row and kept the OLD instance's parent
+#                     and start time. v2 adds create_time_utc: (pid, start time)
+#                     is how an operating system itself identifies a process.
+#                     For agents that do not report a start time the column is
+#                     NULL, and v2 then behaves exactly like v1.
 DEDUPE_INDEXES = (
-    ("ux_raw_logs_dedupe",
-     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_logs_dedupe ON raw_logs"
-     "(host_id, source, COALESCE(event_time_utc,''), COALESCE(event_id,-1), COALESCE(provider,''))"),
-    ("ux_raw_processes_dedupe",
-     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_processes_dedupe ON raw_processes"
+    ("ux_raw_logs_dedupe_v2",
+     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_logs_dedupe_v2 ON raw_logs"
+     "(host_id, source, COALESCE(event_time_utc,''), COALESCE(event_id,-1), COALESCE(provider,''),"
+     " COALESCE(payload_sha256,''))"),
+    ("ux_raw_processes_dedupe_v2",
+     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_processes_dedupe_v2 ON raw_processes"
      "(host_id, COALESCE(pid,-1), COALESCE(name,''), COALESCE(cmdline,''),"
-     " COALESCE(exe_path,''), COALESCE(sha256,''))"),
+     " COALESCE(exe_path,''), COALESCE(sha256,''), COALESCE(create_time_utc,''))"),
     ("ux_raw_connections_dedupe",
      "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_connections_dedupe ON raw_connections"
      "(host_id, COALESCE(pid,-1), COALESCE(local_ip,''), COALESCE(local_port,-1),"
@@ -398,6 +427,13 @@ DEDUPE_INDEXES = (
      "CREATE INDEX IF NOT EXISTS ix_detections_dedupe ON detections"
      "(host_id, rule_name, severity, last_seen_utc)"),
 )
+
+# v1 index name -> the v2 index that replaces it. Stores built by an earlier
+# release carry the v1 index; upgrade_dedupe_indexes() swaps it at startup.
+SUPERSEDED_DEDUPE_INDEXES = {
+    "ux_raw_logs_dedupe": "ux_raw_logs_dedupe_v2",
+    "ux_raw_processes_dedupe": "ux_raw_processes_dedupe_v2",
+}
 
 # ---------------------------------------------------------------------------
 # Layer 4.5 ML schema.
@@ -582,6 +618,9 @@ def ensure_dedupe_indexes(conn):
     is inactive until the duplicates are purged.
     """
     created, skipped = [], []
+    # A superseded v1 index would keep enforcing the old, too-coarse key.
+    for old in SUPERSEDED_DEDUPE_INDEXES:
+        conn.execute(f"DROP INDEX IF EXISTS {old}")
     for name, ddl in DEDUPE_INDEXES:
         try:
             conn.execute(ddl)
@@ -592,11 +631,53 @@ def ensure_dedupe_indexes(conn):
     return created, skipped
 
 
+def drop_dedupe_indexes(conn):
+    """Drop every natural-key unique index, current and superseded.
+
+    For stores that must keep every raw row as a distinct sample - the offline ML
+    training corpus above all, which loads with plain INSERTs. Driven by the
+    registry, so a renamed or added index cannot be silently left behind; a
+    hard-coded list of names already missed the v2 rename once.
+    """
+    names = [name for name, ddl in DEDUPE_INDEXES if "UNIQUE" in ddl]
+    names += list(SUPERSEDED_DEDUPE_INDEXES)
+    for name in names:
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+    conn.commit()
+    return names
+
+
+def upgrade_dedupe_indexes(conn):
+    """Replace v1 dedupe indexes with their v2 successors. Returns the swaps made.
+
+    Runs at every startup but only does work on a store that still carries a v1
+    index. Building the v2 index there cannot fail: each v2 key is its v1 key
+    plus one more column, so rows that were unique under v1 stay unique under v2.
+    The one-off cost is a single index build.
+
+    A store with no v1 index is left alone. In particular this does not create
+    dedupe indexes on a legacy store that never had them; that stays the job of
+    scripts/purge_host_data.py, so startup is never blocked by a large scan.
+    """
+    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    ddl_by_name = dict(DEDUPE_INDEXES)
+    swapped = []
+    for old, new in SUPERSEDED_DEDUPE_INDEXES.items():
+        if old not in present:
+            continue
+        conn.execute(f"DROP INDEX {old}")
+        conn.execute(ddl_by_name[new])
+        swapped.append(f"{old} -> {new}")
+    conn.commit()
+    return swapped
+
+
 def init_db(db_path=None):
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
         ensure_schema(conn)
+        upgrade_dedupe_indexes(conn)
         conn.commit()
         # A brand new (or freshly purged) store has no duplicates yet, so the
         # dedupe indexes build instantly. On a legacy store they are left for

@@ -108,17 +108,31 @@ def clear_cache() -> None:
 
 
 def choose_tier(conn, host_id: int | None = None, collection_id: str | None = None) -> str:
-    """Pick the feature tier a host can actually support.
+    """Pick the feature tier to serve. **T1 unless T2 is explicitly requested.**
 
-    T2 needs Sysmon rows in `raw_logs`. Scoring a Sysmon-less host with a T2 model would feed
-    it a block of NaNs it never saw in training, so hosts without Sysmon get T1.
+    Until the DFIR-only merge this auto-upgraded any host with Sysmon rows to T2. That is
+    now unsafe, and the reason was measured, not assumed:
 
-    Note the evaluation found T2 does not help *this* component (docs: ML_EVALUATION section
-    6.2), so `ATOR_ML_TIER` can pin the tier; this function only decides what is *possible*.
+    The merged ingest stores each log event ONCE, in the collection where it first
+    arrived, but MOVES a re-observed process into the newest collection. Sysmon features
+    are joined to processes within one collection. So from its second sweep on, a
+    long-running process on a Sysmon host is served to the T2 model with
+    `sysmon_available = 0` and its Sysmon evidence gone (5 unsigned image loads -> NaN in
+    the reproduction) - input the T2 model never saw, since every training row has
+    `sysmon_available = 1`.
+
+    Serving T1 costs nothing measurable: T2 has never beaten T1 outside the noise band for
+    any component, and T1 is the documented recommendation for all three
+    (reports_ml/MODEL_CARDS.md). T1 reads no logs, so it is unaffected.
+
+    `ATOR_ML_TIER=t2` still opts in, but only on a host that actually has Sysmon: T2 on a
+    host without it would feed the model a block of NaNs. Making T2 safe to default again
+    needs Sysmon events joined to processes by (host, pid, start time) across
+    collections - see docs/ML_MERGE_DFIR_NOTES.md.
     """
     pinned = os.environ.get("ATOR_ML_TIER")
-    if pinned in TIERS:
-        return pinned
+    if pinned != "t2":
+        return "t1"
     sql = "SELECT 1 FROM raw_logs WHERE source='sysmon'"
     params: list = []
     if host_id is not None:

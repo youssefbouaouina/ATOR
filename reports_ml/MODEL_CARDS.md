@@ -22,10 +22,14 @@ not used (`server/engine/ml_registry.py`).
 > metrics fell accordingly. The lower numbers are the ones a deployed host can actually
 > reproduce. `docs/ML_PHASE8_PLAN.md` carries the argument and the per-feature measurements.
 
-A host is scored at the highest tier its telemetry actually supports
-(`ml_registry.choose_tier`), because feeding a T2 model a block of NaNs it never saw in
-training is worse than using T1. **T1 is the recommended deployment tier for all three
-components** — the measured gains from T2 and T3 both sit inside the confidence intervals.
+**T1 is served by default for all three components** (`ml_registry.choose_tier`). Until
+the DFIR-only merge (2026-09-21), any host with Sysmon was auto-upgraded to T2. That became
+unsafe once the merged ingest began storing each log event once but moving re-observed
+processes to the newest collection. From its second sweep on, a long-running process
+reached the T2 model with `sysmon_available = 0` and its Sysmon evidence gone
+(`docs/ML_MERGE_DFIR_NOTES.md` §2.4). `ATOR_ML_TIER=t2` still opts in, but only on hosts
+with Sysmon. The measured gains from T2 and T3 both sit inside the confidence intervals, so
+serving T1 costs nothing measurable.
 
 ---
 

@@ -108,16 +108,33 @@ class TestRegistry:
         os.utime(path, (os.path.getatime(path), os.path.getmtime(path) + 10))
         assert ml_registry.load_artefact("anomaly", "t1") is not first  # reloaded
 
-    def test_tier_selection_follows_sysmon_availability(self, tmp_db, seeded_host):
+    def _add_sysmon(self, conn, host_id):
+        conn.execute(
+            """INSERT INTO raw_logs (host_id, collection_id, collected_at_utc, source,
+                                      event_id, payload_json)
+               VALUES (?,?,?,'sysmon',1,'{}')""",
+            (host_id, "col-1", database.now_iso()))
+        conn.commit()
+
+    def test_default_tier_is_t1_even_with_sysmon(self, tmp_db, seeded_host, monkeypatch):
+        """Changed after the DFIR-only merge: auto-upgrading Sysmon hosts to T2 served the
+        T2 model sysmon_available=0 for every long-running process from its second sweep
+        on. See ml_registry.choose_tier."""
+        monkeypatch.delenv("ATOR_ML_TIER", raising=False)
         conn = database.connect(tmp_db)
         try:
             assert ml_registry.choose_tier(conn) == "t1"
-            conn.execute(
-                """INSERT INTO raw_logs (host_id, collection_id, collected_at_utc, source,
-                                          event_id, payload_json)
-                   VALUES (?,?,?,'sysmon',1,'{}')""",
-                (seeded_host["host_id"], "col-1", database.now_iso()))
-            conn.commit()
+            self._add_sysmon(conn, seeded_host["host_id"])
+            assert ml_registry.choose_tier(conn) == "t1"
+        finally:
+            conn.close()
+
+    def test_t2_opt_in_requires_sysmon(self, tmp_db, seeded_host, monkeypatch):
+        monkeypatch.setenv("ATOR_ML_TIER", "t2")
+        conn = database.connect(tmp_db)
+        try:
+            assert ml_registry.choose_tier(conn) == "t1", "T2 without Sysmon is all NaN"
+            self._add_sysmon(conn, seeded_host["host_id"])
             assert ml_registry.choose_tier(conn) == "t2"
         finally:
             conn.close()
@@ -204,11 +221,24 @@ class TestAnomalyScoring:
             conn.close()
 
     def test_second_run_does_not_duplicate(self, scored_db):
+        """Re-running over the same data opens no new detections and counts no new sightings.
+
+        Since the DFIR-only merge, a process seen again in a LATER sweep is folded into its
+        finding as a sighting (hit_count), the convention rule detections use. Re-scanning
+        data already counted - which "Run hunt now" does on every click - is neither.
+        """
         conn = database.connect(scored_db["db"])
         try:
             hits = ml_integration.run_ml_anomaly_detection(conn, top_k=5)
-            ml_integration.insert_ml_detections(conn, hits)
-            assert ml_integration.run_ml_anomaly_detection(conn, top_k=5) == []
+            first_ids = ml_integration.insert_ml_detections(conn, hits)
+            for _ in range(3):                   # three more clicks, no new sweep
+                again = ml_integration.run_ml_anomaly_detection(conn, top_k=5)
+                assert again == [], "a rescan of counted data is not a new sighting"
+                assert ml_integration.insert_ml_detections(conn, again) == []
+            assert conn.execute("SELECT COUNT(*) FROM detections WHERE rule_type='ml_anomaly'"
+                                ).fetchone()[0] == len(first_ids)
+            assert conn.execute("SELECT MAX(hit_count) FROM detections "
+                                "WHERE rule_type='ml_anomaly'").fetchone()[0] == 1
         finally:
             conn.close()
 
