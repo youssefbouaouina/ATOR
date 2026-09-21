@@ -49,11 +49,17 @@ see `docs/ML_MERGE_DFIR_NOTES.md`). The user pushes to `ML` only; youssef merges
 
 ### Run it
 ```bash
-.venv-ml313/Scripts/python.exe -m uvicorn server.app:app --host 127.0.0.1 --port 8000
+.venv/Scripts/python.exe -m server.app
 ```
-Then open <http://127.0.0.1:8000/ml> — the **Threat Hunting** tab (formerly ML Analytics). "Score now" runs the models
-against the current database; "Recompute risk" refreshes host scores. ML findings also appear
-on **Investigation** (Src + Conf columns) and **Endpoints** (Risk column).
+This listens on all interfaces (`0.0.0.0:8000`), which enrolling endpoints need. A
+`uvicorn ... --host 127.0.0.1` command, as this file used to suggest, is reachable from
+this machine only, so remote enrollment fails with "cannot connect". Endpoints on the lab
+network also need the inbound firewall rule in `docs/DEPLOYMENT.md`.
+
+Then open <http://127.0.0.1:8000/ml> — the **Threat Hunting** tab (formerly ML Analytics).
+"Run hunt now" scores the current database; "Refresh host risk" recomputes host scores. ML
+findings also show on **Endpoints** (Risk column). The Investigation page's ML columns were
+dropped in youssef's redesign.
 
 ### Deliverables to read
 | File | What it is |

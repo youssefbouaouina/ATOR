@@ -19,6 +19,36 @@ never `127.0.0.1`:
 New-NetFirewallRule -DisplayName "ATOR Server" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
 ```
 
+Prefer limiting that rule to the endpoint subnet. The dashboard and the enrollment-approval
+API have no login, so anything that can reach port 8000 can approve an enrollment. A
+server on a laptop would otherwise also be open on its home or office Wi-Fi:
+
+```powershell
+New-NetFirewallRule -DisplayName "ATOR Server (lab subnet)" -Direction Inbound -Protocol TCP -LocalPort 8000 -RemoteAddress 192.168.50.0/24 -Action Allow
+```
+
+### The address in generated enrollment commands
+
+The enrollment status page (`/enroll/status/<token>`) builds a copy-paste bootstrap command
+that embeds the server's URL. That URL is chosen in this order (`server/ui.py`,
+`enrollment_server_url`):
+
+1. **`ATOR_PUBLIC_URL`**, if set, is used as-is. Use it for a DNS name, a reverse proxy or NAT.
+2. **The address the page was opened with**, unless it is loopback. Whoever is viewing the
+   page already reached the server there.
+3. **This server's address on `ATOR_ENROLL_SUBNET`** (comma-separated CIDRs, default
+   `192.168.50.0/24`). This covers viewing the page on the server itself via `localhost`.
+4. The default-route interface, as a last resort.
+
+A multi-homed host is why step 3 exists. A laptop running the server with Wi-Fi plus
+several VMware adapters would otherwise advertise its Wi-Fi address, which lab VMs on
+VMnet2 cannot reach:
+
+```powershell
+$env:ATOR_ENROLL_SUBNET = "192.168.50.0/24"      # the default; set it for other networks
+python -m server.app
+```
+
 Production notes:
 - Bind to `0.0.0.0:8000` only behind TLS (reverse proxy such as Caddy/Nginx).
 - Set `ATOR_DFIR_DB=/var/lib/ator/ator.db` to control DB location.

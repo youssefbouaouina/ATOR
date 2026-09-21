@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 from datetime import datetime, timezone
 
@@ -14,9 +15,14 @@ def create_app():
     return api_app
 
 
-def detect_lan_ip():
-    """Best-effort discovery of this server's LAN IP so that generated
-    enrollment commands are reachable from remote endpoints."""
+#: Subnet(s) the enrolled endpoints live on. The generated enrollment command must carry
+#: an address those endpoints can actually reach. Comma-separated CIDRs; override with
+#: ATOR_ENROLL_SUBNET. The default is the project's lab network (VMware VMnet2).
+DEFAULT_ENROLL_SUBNETS = "192.168.50.0/24"
+
+
+def _default_route_ip():
+    """The interface the OS would use to reach the internet (no packet is sent)."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -30,6 +36,72 @@ def detect_lan_ip():
         return socket.gethostbyname(socket.gethostname())
     except Exception:
         return "127.0.0.1"
+
+
+def _local_ipv4_addresses():
+    """Every IPv4 address bound on this machine, loopback excluded."""
+    try:
+        import psutil
+        return [a.address for addrs in psutil.net_if_addrs().values() for a in addrs
+                if a.family == socket.AF_INET and not a.address.startswith("127.")]
+    except Exception:
+        return []
+
+
+def _enroll_subnets():
+    import ipaddress
+    out = []
+    raw = os.environ.get("ATOR_ENROLL_SUBNET", DEFAULT_ENROLL_SUBNETS)
+    for part in raw.split(","):
+        try:
+            out.append(ipaddress.ip_network(part.strip(), strict=False))
+        except ValueError:
+            continue
+    return out
+
+
+def detect_lan_ip():
+    """The address of this server that enrolling endpoints can reach.
+
+    Previously this returned the default-route interface. On a machine with several
+    interfaces that is wrong for a lab network: this server has Wi-Fi (192.168.0.x)
+    plus six VMware adapters, and the endpoints on 192.168.50.0/24 can only reach it
+    at 192.168.50.1 - so every command generated while viewing the page via
+    localhost pointed them at an address they could not reach.
+
+    Order: an address of this machine inside ATOR_ENROLL_SUBNET, then the
+    default-route interface, then loopback.
+    """
+    import ipaddress
+    local = _local_ipv4_addresses()
+    for subnet in _enroll_subnets():
+        for ip in local:
+            try:
+                if ipaddress.ip_address(ip) in subnet:
+                    return ip
+            except ValueError:
+                continue
+    return _default_route_ip()
+
+
+def enrollment_server_url(request):
+    """Base URL to put in generated enrollment commands.
+
+    1. ATOR_PUBLIC_URL, if set - explicit wins (NAT, reverse proxy, DNS name).
+    2. The address the page was opened with, when it is not loopback: whoever is
+       viewing it already reached the server there.
+    3. Otherwise (page opened on the server itself via localhost) the server's
+       address on the enrollment subnet - see detect_lan_ip().
+    """
+    explicit = os.environ.get("ATOR_PUBLIC_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    base = str(request.base_url).rstrip("/")
+    host = request.url.hostname or ""
+    if host not in ("localhost", "127.0.0.1", "::1", "[::1]") and not host.startswith("127."):
+        return base
+    port = request.url.port
+    return f"{request.url.scheme}://{detect_lan_ip()}" + (f":{port}" if port else "")
 
 
 templates = None
@@ -481,6 +553,7 @@ def register_ui(target_app):
         """Enrollment request status page."""
         return tpl.TemplateResponse(request, "enroll_status.html", {
             "page": "enroll", "lan_ip": detect_lan_ip(),
+            "server_url": enrollment_server_url(request),
         })
 
     @target_app.get("/enrollments", response_class=HTMLResponse)
