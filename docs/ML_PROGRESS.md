@@ -28,7 +28,10 @@ identical to `.venv-ml313/`. The scheduled weekly job uses `.venv`. Run tests as
 | **9 — DFIR-only merge, dedupe fixes, security UI** | ✅ **done & verified** — `513 passed, 1 skipped, 0 failed` |
 | **10 — Weekly MLOps pipeline** | ✅ **done & verified** — real two-week run on scratch copies; `635 passed, 1 skipped, 0 failed` |
 
-**Status: all ten phases complete. Phase 10 is uncommitted until the user asks.** Phases 1–9 are pushed to `origin/ML`. youssef merged ML into
+**Status: all ten phases complete and pushed to `origin/ML`.** The weekly pipeline has
+run once on the live system (2026-09-22 20:46): triage and tactic retrained byte-identical
+and were adopted as `v20260922T204601Z`, and the anomaly candidate is on a live trial
+(`python -m ml.mlops status`). The scheduled task runs Sundays 03:00. youssef merged ML into
 `main` on 2026-09-19; `ML` now contains all of his DFIR-only work (fast-forwarded to `main`,
 see `docs/ML_MERGE_DFIR_NOTES.md`). The user pushes to `ML` only; youssef merges to `main`.
 
