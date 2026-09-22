@@ -30,6 +30,9 @@ models/
 # downloaded third-party corpora (OTRF, ~85 MB) - refetched by ml.datasets.otrf
 data/external/
 data/interim/
+# weekly MLOps pipeline state: run reports, staging DB, lock, PAUSED/FROZEN flags.
+# Anchored with a leading slash: a bare "mlops/" would also ignore the ml/mlops/ source.
+/mlops/
 # generated evaluation figures under reports_ml/ ARE committed (deliverables);
 # only scratch output is ignored
 reports_ml/scratch/

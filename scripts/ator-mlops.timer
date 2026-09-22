@@ -1,0 +1,13 @@
+# Weekly trigger for ator-mlops.service.
+# Persistent=true: a machine that was off at the scheduled time runs the job at next boot
+# instead of skipping a week; the pipeline's own 6-day cadence guard prevents doubles.
+[Unit]
+Description=Weekly ATOR ML update
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

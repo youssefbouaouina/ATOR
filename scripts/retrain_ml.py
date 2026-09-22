@@ -1,6 +1,12 @@
-"""Scheduled ML maintenance: check for drift, retrain if needed, re-register models.
+"""Manual ML maintenance: check for drift, or force a retrain straight into models/.
 
-Patterned on scripts/update_mitre.py. Intended for a daily cron / scheduled task:
+**For scheduled, unattended retraining use the weekly MLOps pipeline instead**
+(`python -m ml.mlops run`, docs/ML_MLOPS_RUNBOOK.md). It stages, gates, shadow-trials and
+versions every model, and can roll back. This script writes directly into the served models/
+directory with none of that, which is fine by hand and wrong on a timer. If you do use
+--retrain, the pipeline's next run will find the hand-placed models and adopt them.
+
+Patterned on scripts/update_mitre.py:
 
     python scripts/retrain_ml.py --check-drift          # report only, never trains
     python scripts/retrain_ml.py --retrain              # force a retrain

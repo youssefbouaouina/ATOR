@@ -1,0 +1,3 @@
+# cmd.exe misparses some batch constructs with LF-only line endings; keep the
+# scheduled-task wrapper CRLF in every clone regardless of core.autocrlf.
+*.cmd text eol=crlf
