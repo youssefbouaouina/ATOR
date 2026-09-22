@@ -4,10 +4,11 @@
 > *next*, and the exact commands that prove it. Update it at every phase checkpoint.
 > Design rationale lives in `docs/ML_ARCHITECTURE.md`; this file is state only.
 
-**Last updated:** 2026-09-18
+**Last updated:** 2026-09-22
 **Branch:** `ML`
-**Interpreter:** `.venv-ml313/Scripts/python.exe` (Python 3.13.14) — **not** the committed
-`.venv/`, which is broken (points at `C:\Users\SidikRoyale\...`).
+**Interpreter:** `.venv/Scripts/python.exe` (Python 3.13), rebuilt locally on 2026-09-22 and
+identical to `.venv-ml313/`. The scheduled weekly job uses `.venv`. Run tests as
+`pytest tests`: from the repo root, pytest also collects the nested `ATOR/` clone.
 
 ---
 
@@ -25,8 +26,9 @@
 | **7 — Improvements (labels, features, tiers)** | ✅ done — **but 7b.2 was withdrawn in Phase 8**, see below |
 | **8 — Train/serve correction** | ✅ **done & verified** |
 | **9 — DFIR-only merge, dedupe fixes, security UI** | ✅ **done & verified** — `513 passed, 1 skipped, 0 failed` |
+| **10 — Weekly MLOps pipeline** | ✅ **done & verified** — real two-week run on scratch copies; `635 passed, 1 skipped, 0 failed` |
 
-**Status: all nine phases complete and pushed to `origin/ML`.** youssef merged ML into
+**Status: all ten phases complete. Phase 10 is uncommitted until the user asks.** Phases 1–9 are pushed to `origin/ML`. youssef merged ML into
 `main` on 2026-09-19; `ML` now contains all of his DFIR-only work (fast-forwarded to `main`,
 see `docs/ML_MERGE_DFIR_NOTES.md`). The user pushes to `ML` only; youssef merges to `main`.
 
@@ -70,6 +72,8 @@ dropped in youssef's redesign.
 | `docs/ML_ARCHITECTURE.md` | Design decisions and corrections to `hazem2.md` |
 | **`docs/ML_PHASE8_PLAN.md`** | **Read this one.** How a feature set that scored well in cross-validation turned out to be unusable in production, how it was caught, and what every headline number looks like once it was removed. |
 | `docs/ML_PHASE7_PLAN.md` | Phase 7, carrying a correction banner for the part Phase 8 withdrew |
+| **`docs/ML_MLOPS_PLAN.md`** | Phase 10: the weekly retrain → evaluate → shadow A/B → deploy → monitor pipeline, and why each safety decision was made |
+| `docs/ML_MLOPS_RUNBOOK.md` | Operating it: install the schedule, read the result, what to do when |
 | `reports_ml/burst_audit.json` · `drift_eval.json` | The measurements behind the Phase 8 decisions |
 
 ### Try the ML layer by hand
@@ -518,6 +522,53 @@ features on that evidence would be inferring from a biased sample.
 Each tier is an ablation that answers a deployment question with a number:
 Sysmon +0.0037, PowerShell −0.0008 — **both within noise, so T1 remains the recommendation.**
 
+## Phase 10 results (measured 2026-09-22)
+
+A weekly MLOps pipeline, `python -m ml.mlops run`, scheduled by Windows Task Scheduler
+(`scripts/install_mlops_schedule.ps1`) or a systemd timer. Design: `docs/ML_MLOPS_PLAN.md`;
+operation: `docs/ML_MLOPS_RUNBOOK.md`.
+
+### Verified end to end on real data (scratch copies of the live DB and models)
+
+| Run | What happened |
+|---|---|
+| week 1 (10 min) | ETL full rebuild 80 s → 115 captures, 1,716 processes, 205 attack labels · anomaly 253 s, triage 175 s, tactic 11 s · triage and tactic **byte-identical** to the hand-trained models → adopted for provenance, no trial · anomaly passed every offline gate (PR-AUC 0.558 vs 0.549; unseen-live alert rate 4.84% = champion) → shadow trial started · week-over-week drift flagged the newly enrolled host (exit 2, correct) |
+| the week | three real engine passes with the trial running: 2,565 processes scored by both models, 0 errors, 27 vs 27 would-be leads (26 in common), 175 ms vs 203 ms per pass |
+| week 2 (5 min) | trial **promoted**, smoke test passed against the file the server loads · triage/tactic **unchanged** (fingerprints match: no churn) · anomaly retrained on the newly admitted week, gates passed, trial 2 started |
+| rollback | `python -m ml.mlops rollback anomaly` restored the previous model; smoke test ok |
+| dashboard | *Detection model updates* panel, and verdict buttons on each lead, clicked in the browser |
+
+### Three things the real run caught that the tests had not
+
+1. **Excluding every unreviewed ML lead from the benign baseline is a self-reinforcing loop.**
+   The first candidate flagged **9.35%** of unseen live processes vs **4.84%** for the model in
+   service; gate A4 rejected it. Measured on identical rows: re-admitting leads the triage
+   model rates < 50% restores 4.84% (policy shipped); only the 5 leads rated 81–86% stay out.
+   Without this, every weekly update would have been rejected until the model went stale.
+2. **Recall at the 0.99 floor moves ~3 points from benign-data noise alone** (6 of 205 attacks),
+   so the A3 margin went from 0.03 to 0.05. A poisoned baseline drops it far more (~1.0 → ~0.17,
+   `test_poisoned_challenger_is_blocked`).
+3. **Corpus-vs-live drift is permanent** (25 of 80 features, every week), so alerting on it
+   would teach operators to ignore the result code. Drift now compares this week against the
+   estate's own earlier weeks.
+
+Also found and fixed on the way: pandas stores a missing start time as NaN, which is truthy
+(crashed the lineage walk); an unreviewed ML lead on `System` cascaded exclusions over the OS
+tree (lineage now follows only rule hits and confirmed threats, never OS roots); model
+"equivalence" by comparing scores is unsound (percentiles saturate), so it is decided by
+model identity, where sklearn trees pickle their padding bytes and fail safe; a run killed
+mid-flight would have left the dashboard saying "Updating now" forever.
+
+### New files
+`ml/mlops/` (config, lock, store, data, train, scoring, evaluate, trial, monitor, report,
+pipeline, `__main__`, `approved_captures.json`) · `server/engine/ml_shadow.py` (in-engine shadow
+scoring) · `server/engine/ml_ops.py` (dashboard view) · `scripts/install_mlops_schedule.ps1`,
+`mlops_weekly.cmd`, `ator-mlops.service`, `ator-mlops.timer` · six test files
+`tests/test_mlops_*.py` (106 tests). Schema: five additive tables
+(`ml_pipeline_runs`, `ml_shadow_trials`, `ml_shadow_observations`, `ml_shadow_flags`,
+`ml_feedback`). API: `POST /api/v1/ml/feedback`, `GET /api/v1/ml/ops`. Trainers gained
+`--models-dir`; `assemble.load` honours a snapshot's `ml_training_exclusions`.
+
 ## Internship subject (source of truth for scope)
 
 From `Internship_Subject_DFIR.pdf` (the first copy sent was 0 bytes; read from the re-sent
@@ -574,11 +625,26 @@ stated subject, not a detour from it.
 | **Burst features are shifted in the tail** | `procs_within_5s` corpus p75 15 vs live 93; `seconds_since_parent_start` corpus p75 13 s vs live 7,203 s. Centres agree (mean process density 47.4 corpus / 53.1 live) and they ship on that basis. **Bounding or log-scaling them is the obvious next step** — it would not affect Component B (tree-based, invariant to monotone transforms) but would affect Component A. Not done: it is another spec bump and full retrain. |
 | **Component A is over-dimensioned** | Five of seven feature families *improve* the T2 model when removed (`ML_EVALUATION.md` §6). At 205 positives, feature selection for Component A specifically is now better value than any new feature. |
 | **Component A's margin over the best baseline is marginal** | Model CI 0.414–0.665 vs best-single-feature 0.253–0.413 — non-overlapping by 0.001. Its case rests on precision@25 (0.84 vs 0.28), which matches how it is deployed. Say so rather than quoting PR-AUC. |
+| **Weekly pipeline needs the server running for trials** | A candidate anomaly model collects evidence only while the server scores live traffic (24 active hours, 200 processes). On a lab laptop that is off most of the week, trials extend week to week and raise *attention* after 3. `mlops/config.json` can lower the bar for a lab. |
+| **Dashboard verdicts are unauthenticated** | Anyone reaching port 8000 can mark a lead benign, which feeds the retrain. Bounded (rule hits override, 200-row cap, listed in each report, confirmed-threat gate) but only authentication removes it. `docs/LIMITATIONS.md`. |
 | **Live data predating Phase 8 has no `create_time_utc`** | The column is populated going forward only; the two existing collections in `ator_dfir.db` have NULL, so the burst features are NaN for them until the agent runs again. Nothing to fix — it is what a nullable additive column means. |
 
 ---
 
 ## Changelog
+
+- **2026-09-22** — **Phase 10: weekly MLOps pipeline.** Retrieve (OTRF fetch, checksum-pinned
+  admission: new captures wait for review because labels need per-tool signatures), snapshot
+  the live DB, exclude live rows that must not be assumed benign (cooling-off, rule hits and
+  their lineage, incident windows, likely-malicious ML leads), staged ETL with data validation
+  and atomic swap, fingerprinted retraining into an immutable model store, offline gates
+  against the no-ML baselines and against the deployed model on identical rows, one-week
+  in-engine shadow trial (champion/challenger, not a traffic split: safer and paired),
+  atomic promotion with canary smoke test and automatic rollback, drift/outcome/health
+  monitoring, run reports, kill switches (pause, freeze), analyst verdicts on leads feeding
+  the next retrain, and a *Detection model updates* panel. Real two-week run verified on
+  scratch copies; three policy corrections came from it (see Phase 10 results).
+  Suite: `635 passed, 1 skipped, 0 failed`.
 
 - **2026-09-21** — **Phase 9: DFIR-only merge, dedupe fixes, security-oriented UI.**
   `ML` fast-forwarded to `main` (= DFIR-only + ML, with youssef's conflict resolutions),

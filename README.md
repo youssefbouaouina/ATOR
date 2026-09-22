@@ -23,6 +23,9 @@ L6  Dashboard & reports   Jinja2+Bootstrap+Chart.js UI, PDF (ReportLab),
 
 ## Quick start (Windows)
 
+> Starting from a fresh clone, or want the ML layer (Layer 4.5) and its weekly updates too?
+> **[SETUP.md](SETUP.md)** is the complete from-scratch guide, including troubleshooting.
+
 ```powershell
 cd ator-dfir
 python -m venv .venv

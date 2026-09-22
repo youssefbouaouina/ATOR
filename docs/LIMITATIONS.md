@@ -38,7 +38,11 @@ threat-hunting aid, not a full EDR.
   never executed. Wire real actions only after testing `agent` task-polling
   command channels with allow-listing for the server IP.
 - The web UI has no authentication (bind it to localhost or front it with an
-  authenticating proxy).
+  authenticating proxy). Since Phase 10 this also covers the analyst verdicts on ML leads,
+  which feed the weekly retrain: anyone who can reach the dashboard can mark a lead benign.
+  The pipeline limits the damage (a rule hit always overrides a verdict, re-admissions are
+  capped at 200 per run and listed in each run report, and every future model must still
+  catch confirmed threats), but only authentication removes it.
 - Agent-server channel uses HTTPS bearer tokens; mTLS and payload signing are
   future work.
 

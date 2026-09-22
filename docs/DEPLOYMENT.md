@@ -189,6 +189,21 @@ chatty exclusions in place so interesting events survive the window.
 The agent automatically prefers the Sysmon operational log when present;
 otherwise falls back to PowerShell `Get-WinEvent`.
 
+## Weekly ML model updates (server)
+
+The ML models retrain, evaluate, trial and deploy themselves once a week. That is optional:
+without the schedule, the models in `models/` keep serving unchanged. To install it on the
+server (Windows, current user, no admin):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_mlops_schedule.ps1
+```
+
+On Linux, use `scripts/ator-mlops.service` and `scripts/ator-mlops.timer`. Restart the server
+once after updating, so the live trials can collect evidence. New models reach analysts only
+after offline gates and a week of silent side-by-side scoring. Operation, reading the results
+and every command: `docs/ML_MLOPS_RUNBOOK.md`. Design: `docs/ML_MLOPS_PLAN.md`.
+
 ## Atomic Red Team validation
 
 See docs/VALIDATION.md. Requires an isolated test VM with admin PowerShell.
