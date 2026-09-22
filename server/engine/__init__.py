@@ -307,7 +307,8 @@ def _run_engine(conn=None, rules_dir=None, host_ids=None, scan_history=False):
             from server.engine.ml_integration import (
                 insert_ml_detections, run_ml_anomaly_detection,
             )
-            ml_hits = run_ml_anomaly_detection(conn, since_utc=_kv_get(conn, "ml_anomaly_last_run_utc"))
+            ml_hits = run_ml_anomaly_detection(conn, since_utc=_kv_get(conn, "ml_anomaly_last_run_utc"),
+                                               shadow=True)
             if ml_hits:
                 ml_ids = insert_ml_detections(conn, ml_hits)
             _kv_set(conn, "ml_anomaly_last_run_utc",

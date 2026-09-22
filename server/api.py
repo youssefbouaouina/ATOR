@@ -2239,3 +2239,56 @@ def ml_drift_status(limit: int = 50, conn=Depends(get_conn)):
         "retrain_recommended": bool(shifted),
         "thresholds": {"stable_below": 0.10, "shifted_above": 0.25},
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: analyst verdicts on ML leads, and the weekly MLOps pipeline status.
+# ---------------------------------------------------------------------------
+
+class MlFeedbackRequest(BaseModel):
+    detection_id: int
+    # 'clear' removes an earlier verdict, so a mis-click is never permanent.
+    verdict: str = Field(pattern="^(confirmed|benign|clear)$")
+    note: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/api/v1/ml/feedback")
+def ml_feedback(body: MlFeedbackRequest, conn=Depends(get_conn)):
+    """Record an analyst's verdict on an ML lead.
+
+    It feeds the weekly retrain (ml/mlops/data.py): a lead dismissed as benign rejoins the
+    benign baseline, unless a deterministic rule also fired on that process. A confirmed
+    threat is never used as benign, and becomes part of the "confirmed threats kept"
+    regression check every future model must pass.
+    """
+    row = conn.execute("SELECT rule_type FROM detections WHERE id=?",
+                       (body.detection_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "detection not found")
+    if row["rule_type"] != "ml_anomaly":
+        raise HTTPException(400, "verdicts are recorded for behavioural (ML) leads only")
+    if body.verdict == "clear":
+        conn.execute("DELETE FROM ml_feedback WHERE detection_id=?", (body.detection_id,))
+    else:
+        conn.execute(
+            """INSERT INTO ml_feedback (detection_id, verdict, note, recorded_at_utc)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(detection_id) DO UPDATE SET verdict=excluded.verdict,
+                   note=excluded.note, recorded_at_utc=excluded.recorded_at_utc""",
+            (body.detection_id, body.verdict, body.note, database.now_iso()))
+    database.audit(conn, "analyst", "ml_feedback",
+                   {"detection_id": body.detection_id, "verdict": body.verdict})
+    conn.commit()
+    return {"detection_id": body.detection_id, "verdict": None if body.verdict == "clear"
+            else body.verdict}
+
+
+@app.get("/api/v1/ml/ops")
+def ml_ops_status(conn=Depends(get_conn)):
+    """Weekly MLOps pipeline: models in service, trials, recent runs, attention items."""
+    from server.engine import ml_ops, ml_registry
+    try:
+        models = ml_registry.describe(conn).get("models") or []
+    except Exception:                            # noqa: BLE001
+        models = []
+    return ml_ops.ops_view(conn, models)

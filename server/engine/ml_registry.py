@@ -29,7 +29,7 @@ MODELS_DIR = os.environ.get("ATOR_ML_MODEL_DIR", os.path.join(_PROJECT_ROOT, "mo
 MODEL_TYPES = ("anomaly", "triage", "tactic")
 TIERS = ("t1", "t2")
 
-_cache: dict[str, tuple[float, object]] = {}
+_cache: dict[str, tuple[tuple, object]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -56,11 +56,19 @@ def dependencies_available() -> MlStatus:
     return MlStatus(available=True)
 
 
-def model_path(model_type: str, tier: str) -> str:
+# Where an artefact lives. "champion" is what the server serves; "shadow" is a challenger
+# under a live trial (docs/ML_MLOPS_PLAN.md section 4.2): the engine scores traffic with it
+# silently and its output never becomes a detection.
+SLOTS = ("champion", "shadow")
+
+
+def model_path(model_type: str, tier: str, slot: str = "champion") -> str:
+    if slot == "shadow":
+        return os.path.join(MODELS_DIR, "shadow", f"{model_type}_{tier}.joblib")
     return os.path.join(MODELS_DIR, f"{model_type}_{tier}.joblib")
 
 
-def load_artefact(model_type: str, tier: str) -> dict | None:
+def load_artefact(model_type: str, tier: str, slot: str = "champion") -> dict | None:
     """Load a joblib artefact, cached by (path, mtime). None when unavailable or stale.
 
     A feature-spec mismatch returns None rather than raising: the engine should degrade to
@@ -71,11 +79,17 @@ def load_artefact(model_type: str, tier: str) -> dict | None:
     if not status.available:
         return None
 
-    path = model_path(model_type, tier)
+    path = model_path(model_type, tier, slot)
     if not os.path.exists(path):
         return None
 
-    mtime = os.path.getmtime(path)
+    # (mtime, size): a promotion replaces the file atomically, and two artefacts written
+    # within one filesystem timestamp tick must still be told apart.
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    mtime = (stat.st_mtime_ns, stat.st_size)
     with _cache_lock:
         cached = _cache.get(path)
         if cached and cached[0] == mtime:
@@ -248,6 +262,8 @@ def describe(conn) -> dict:
                 entry["loadable"] = artefact is not None
                 if artefact is not None:
                     entry["trained_at_utc"] = artefact.get("trained_at_utc")
+                    # Set by the weekly pipeline (ml/mlops); None for hand-trained models.
+                    entry["version_id"] = artefact.get("version_id")
                     entry["metrics"] = artefact.get("metrics") or {}
                 else:
                     entry["note"] = ("artefact refused - feature spec mismatch or "

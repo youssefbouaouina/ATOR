@@ -191,8 +191,10 @@ def register_ui(target_app):
             """SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
                       d.detected_at_utc, d.anomaly_score, d.confidence_score,
                       d.ml_explanation, d.suggested_tactics,
-                      COALESCE(d.hit_count, 1) AS hit_count, d.last_seen_utc
+                      COALESCE(d.hit_count, 1) AS hit_count, d.last_seen_utc,
+                      f.verdict AS analyst_verdict, f.recorded_at_utc AS verdict_at
                FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
+               LEFT JOIN ml_feedback f ON f.detection_id = d.id
                WHERE d.rule_type = 'ml_anomaly'
                ORDER BY d.confidence_score IS NULL, d.confidence_score DESC,
                         d.anomaly_score DESC, d.id DESC LIMIT 60"""):
@@ -248,6 +250,8 @@ def register_ui(target_app):
         }
 
         engines = vocab.engine_cards(ml)
+        from server.engine import ml_ops
+        ops = ml_ops.ops_view(conn, ml.get("models") or [])
         kpis = {
             "leads": len(anomalies),
             "high": sum(1 for a in anomalies if a["likelihood"] and a["likelihood"]["raw"] >= 0.5),
@@ -260,7 +264,7 @@ def register_ui(target_app):
         conn.close()
         return tpl.TemplateResponse(request, "ml_analytics.html", {
             "ml": ml, "anomalies": anomalies, "risk": risk, "drift": drift, "page": "ml",
-            "engines": engines, "kpis": kpis,
+            "engines": engines, "kpis": kpis, "ops": ops,
         })
 
     @target_app.get("/endpoints", response_class=HTMLResponse)

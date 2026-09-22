@@ -503,6 +503,74 @@ CREATE TABLE IF NOT EXISTS ml_drift_log (
 CREATE INDEX IF NOT EXISTS ix_ml_drift_time ON ml_drift_log(computed_at_utc);
 
 CREATE INDEX IF NOT EXISTS ix_det_rule_type ON detections(rule_type);
+
+-- ---- Phase 10: weekly MLOps pipeline (docs/ML_MLOPS_PLAN.md).
+-- One row per pipeline run; the dashboard's "Model operations" panel reads it.
+CREATE TABLE IF NOT EXISTS ml_pipeline_runs (
+    run_id TEXT PRIMARY KEY,
+    started_at_utc TEXT NOT NULL,
+    finished_at_utc TEXT,
+    status TEXT NOT NULL CHECK (status IN
+        ('running','succeeded','attention','failed','skipped')),
+    trigger TEXT NOT NULL DEFAULT 'schedule',
+    summary_json TEXT,
+    report_path TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_ml_pipeline_started ON ml_pipeline_runs(started_at_utc);
+
+-- A challenger model scored silently beside the champion (champion/challenger shadow).
+CREATE TABLE IF NOT EXISTS ml_shadow_trials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id TEXT NOT NULL,
+    components_json TEXT NOT NULL,
+    started_at_utc TEXT NOT NULL,
+    ended_at_utc TEXT,
+    status TEXT NOT NULL CHECK (status IN
+        ('running','promoted','rejected','inconclusive','superseded','aborted')),
+    offline_json TEXT,
+    online_json TEXT,
+    decision_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_ml_shadow_trials_status ON ml_shadow_trials(status);
+
+-- Per-hour aggregate of shadow scoring passes; bounded at 168 rows per weekly trial.
+CREATE TABLE IF NOT EXISTS ml_shadow_observations (
+    trial_id INTEGER NOT NULL REFERENCES ml_shadow_trials(id),
+    hour_utc TEXT NOT NULL,
+    passes INTEGER NOT NULL DEFAULT 0,
+    processes_scored INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    champion_ms_total REAL NOT NULL DEFAULT 0,
+    challenger_ms_total REAL NOT NULL DEFAULT 0,
+    challenger_ms_max REAL NOT NULL DEFAULT 0,
+    last_error TEXT,
+    PRIMARY KEY (trial_id, hour_utc)
+);
+
+-- Distinct processes either model would have reported during a trial.
+CREATE TABLE IF NOT EXISTS ml_shadow_flags (
+    trial_id INTEGER NOT NULL REFERENCES ml_shadow_trials(id),
+    process_key TEXT NOT NULL,
+    host_id INTEGER,
+    pid INTEGER,
+    name TEXT,
+    champion_flag INTEGER NOT NULL DEFAULT 0,
+    challenger_flag INTEGER NOT NULL DEFAULT 0,
+    champion_score REAL,
+    challenger_score REAL,
+    first_seen_utc TEXT NOT NULL,
+    PRIMARY KEY (trial_id, process_key)
+);
+
+-- Analyst verdicts on ML leads. They feed the next retrain (see ml/mlops/data.py) and
+-- the online "confirmed threats kept" gate.
+CREATE TABLE IF NOT EXISTS ml_feedback (
+    detection_id INTEGER PRIMARY KEY REFERENCES detections(id),
+    verdict TEXT NOT NULL CHECK (verdict IN ('confirmed','benign')),
+    note TEXT,
+    recorded_at_utc TEXT NOT NULL,
+    recorded_by TEXT NOT NULL DEFAULT 'analyst'
+);
 """
 
 # Indexes over the columns added by ML_DETECTION_COLUMNS. These MUST be created

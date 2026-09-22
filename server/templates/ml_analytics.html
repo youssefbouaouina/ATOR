@@ -28,6 +28,13 @@
   .results li { font-size: .82rem; }
   .how dt { font-weight: 700; font-size: .82rem; }
   .how dd { font-size: .82rem; color: var(--ator-muted); }
+  .verdict-tag { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+  .verdict-confirmed { background: var(--ator-critical, #b42318); color: #fff; }
+  .verdict-benign { background: var(--ator-border); color: var(--ator-ink); }
+  .ops-fact .label { font-size: .7rem; font-weight: 700; letter-spacing: .05em;
+                     text-transform: uppercase; color: var(--ator-muted); }
+  .ops-bar { height: 6px; border-radius: 3px; background: var(--ator-border); overflow: hidden; }
+  .ops-bar > span { display: block; height: 100%; background: var(--ator-accent); }
 </style>
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
@@ -148,6 +155,8 @@
           <td><span class="sev-chip {{ a.priority.css }}" title="{{ a.priority.title }}">{{ a.priority.label }}</span></td>
           <td class="small">{{ a.hostname or ('host ' ~ a.host_id) }}</td>
           <td><span class="mono small fw-semibold">{{ a.process }}</span>
+            {% if a.analyst_verdict == 'confirmed' %}<span class="verdict-tag verdict-confirmed ms-1" title="An analyst confirmed this lead as a threat">Confirmed</span>
+            {% elif a.analyst_verdict == 'benign' %}<span class="verdict-tag verdict-benign ms-1" title="An analyst dismissed this lead as benign">Dismissed</span>{% endif %}
             {% if a.summary.exe_path %}<div class="text-muted" style="font-size:.7rem;max-width:220px"
                  title="{{ a.summary.exe_path }}">{{ a.summary.exe_path|truncate(38, True) }}</div>{% endif %}</td>
           <td>
@@ -203,6 +212,20 @@
                 <div class="section-label mt-2 mb-1">Command line</div>
                 {% if a.summary.cmdline %}<pre class="cmdline">{{ a.summary.cmdline }}</pre>
                 {% else %}<div class="small text-muted">Not captured &mdash; the agent could not read it (protected process or agent not elevated).</div>{% endif %}
+                <div class="section-label mt-3 mb-1">Analyst verdict</div>
+                <div class="d-flex flex-wrap align-items-center gap-2 verdict-box" data-detection="{{ a.id }}">
+                  <button class="btn btn-sm {{ 'btn-danger' if a.analyst_verdict == 'confirmed' else 'btn-outline-danger' }} verdict-btn"
+                          data-verdict="{{ 'clear' if a.analyst_verdict == 'confirmed' else 'confirmed' }}">
+                    <i class="bi bi-shield-fill-exclamation me-1"></i>Confirmed threat</button>
+                  <button class="btn btn-sm {{ 'btn-secondary' if a.analyst_verdict == 'benign' else 'btn-outline-secondary' }} verdict-btn"
+                          data-verdict="{{ 'clear' if a.analyst_verdict == 'benign' else 'benign' }}">
+                    <i class="bi bi-check2-circle me-1"></i>Benign &middot; false positive</button>
+                  {% if a.analyst_verdict %}<span class="small text-muted">recorded {{ (a.verdict_at or '')[:16]|replace('T',' ') }} &middot; click again to clear</span>{% endif %}
+                </div>
+                <div class="text-muted mt-1" style="font-size:.72rem">
+                  Your verdict trains next week's model: a dismissed lead becomes part of what
+                  &ldquo;normal&rdquo; looks like, and every future model must keep catching confirmed threats.
+                </div>
               </div>
               <div class="col-lg-7">
                 <div class="section-label mb-2">Why it was flagged</div>
@@ -319,6 +342,74 @@
   </div>
 </div>
 
+<!-- ---------------------------------------------------------------- model updates -->
+{% if ops and ops.available %}
+<div class="card ator-card mb-3" id="modelOps">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span><i class="bi bi-arrow-repeat me-1"></i>Detection model updates
+      <span class="text-muted small">&middot; weekly and automatic, never unverified</span></span>
+    <span class="status-pill {{ ops.state.css }}" title="{{ ops.state.detail }}"><span class="dot"></span>{{ ops.state.label }}</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-lg-4 ops-fact">
+        <div class="label mb-1">In service</div>
+        {% for key, m in ops.served.items() %}
+          <div class="small"><b>{{ m.engine }}</b>
+            <div class="text-muted mono" style="font-size:.7rem">{{ m.version_id }} &middot; trained {{ (m.trained_at_utc or '')[:10] }}</div></div>
+        {% else %}<div class="small text-muted">No model in service.</div>{% endfor %}
+      </div>
+      <div class="col-lg-4 ops-fact">
+        <div class="label mb-1">On live trial</div>
+        {% for t in ops.trials %}
+          <div class="small mb-2"><b>{{ t.engine }}</b> <span class="text-muted mono" style="font-size:.7rem">{{ t.version_id }}</span>
+          {% if t.evidence %}
+            <div class="ops-bar my-1" title="evidence collected before a decision can be made"><span style="width: {{ t.progress_pct }}%"></span></div>
+            <div class="text-muted" style="font-size:.74rem">
+              {{ t.evidence.active_hours }}/{{ t.needs.hours }} h of traffic &middot;
+              {{ t.evidence.processes_scored }}/{{ t.needs.processes }} processes compared &middot;
+              would have raised <b>{{ t.evidence.challenger_flagged }}</b> lead{{ '' if t.evidence.challenger_flagged == 1 else 's' }}
+              vs <b>{{ t.evidence.champion_flagged }}</b> from the model in service
+              {% if t.evidence.errors %}&middot; <span class="text-danger">{{ t.evidence.errors }} error(s)</span>{% endif %}
+              {% if t.extensions %}&middot; extended {{ t.extensions }} week{{ '' if t.extensions == 1 else 's' }}{% endif %}
+            </div>
+          {% else %}
+            <div class="text-muted" style="font-size:.74rem">checked against this week's findings at the next weekly run</div>
+          {% endif %}
+          </div>
+        {% else %}<div class="small text-muted">None &mdash; no candidate is waiting.</div>{% endfor %}
+        <div class="text-muted" style="font-size:.72rem">A candidate scores the same traffic silently. Analysts only ever see the model in service.</div>
+      </div>
+      <div class="col-lg-4 ops-fact">
+        <div class="label mb-1">Weekly run</div>
+        {% if ops.last_run %}
+          <div class="small">Last: <b>{{ {'succeeded': 'completed', 'attention': 'completed, needs a look', 'failed': 'failed - nothing changed', 'running': 'running now'}.get(ops.last_run.status, ops.last_run.status) }}</b>
+            <span class="mono text-muted" style="font-size:.7rem">{{ (ops.last_run.started_at_utc or '')[:16]|replace('T',' ') }}</span></div>
+        {% else %}<div class="small text-muted">Has not run on this server yet.</div>{% endif %}
+        {% if ops.next_due_utc %}<div class="small">Next due: <span class="mono">{{ ops.next_due_utc|replace('T',' ') }}</span> UTC</div>{% endif %}
+        {% for d in ops.decisions[:3] %}
+          <div class="small">{{ {'promoted': 'Deployed', 'rejected': 'Rejected', 'aborted': 'Rolled back'}.get(d.status, d.status) }}:
+            {{ d.engine }} <span class="text-muted mono" style="font-size:.7rem">{{ d.version_id }}</span></div>
+        {% endfor %}
+        <div class="small text-muted mt-1">Analyst verdicts so far: {{ ops.feedback.confirmed }} confirmed, {{ ops.feedback.benign }} dismissed.</div>
+      </div>
+    </div>
+    {% if ops.attention %}
+      <div class="alert alert-warning small mt-3 mb-0 py-2">
+        <b><i class="bi bi-exclamation-triangle me-1"></i>Needs a look:</b>
+        <ul class="mb-0 ps-3">{% for item in ops.attention %}<li>{{ item }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+  </div>
+  <div class="card-footer small text-muted">
+    A new model replaces the one in service only after it beats the detection rules and the
+    current model in lab tests <b>and</b> a week of silent side-by-side scoring on your own
+    traffic. Every deployment is checked immediately and rolled back automatically if it fails.
+    Operators: <span class="mono">python -m ml.mlops status</span>.
+  </div>
+</div>
+{% endif %}
+
 <!-- ------------------------------------------------------------------- data health -->
 <div class="card ator-card mb-3">
   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
@@ -342,7 +433,8 @@
         </tr>
       {% else %}
         <tr><td colspan="4" class="p-0"><div class="empty-hint">
-          Not checked yet. Run <span class="mono">python scripts/retrain_ml.py --check-drift</span></div></td></tr>
+          Not checked yet. The weekly model update checks it; to check now run
+          <span class="mono">python scripts/retrain_ml.py --check-drift</span></div></td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -426,6 +518,26 @@
       finally { busy(scoreBtn, false, label); }
     });
   }
+  document.querySelectorAll('.verdict-btn').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const box = btn.closest('.verdict-box');
+      const verdict = btn.dataset.verdict;
+      box.querySelectorAll('button').forEach(b => b.disabled = true);
+      try {
+        const r = await fetch('/api/v1/ml/feedback', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({detection_id: Number(box.dataset.detection), verdict})
+        });
+        if (!r.ok) { toast('Verdict not saved (' + r.status + ')', 'error'); return; }
+        toast(verdict === 'clear' ? 'Verdict cleared'
+              : verdict === 'confirmed' ? 'Marked as a confirmed threat'
+              : "Marked as benign - it will inform next week's model", 'success');
+        setTimeout(() => location.reload(), 600);
+      } catch (e) { toast('Request failed: ' + e, 'error'); }
+      finally { box.querySelectorAll('button').forEach(b => b.disabled = false); }
+    });
+  });
   const riskBtn = document.getElementById('mlRiskBtn');
   if (riskBtn) {
     const label = riskBtn.innerHTML;

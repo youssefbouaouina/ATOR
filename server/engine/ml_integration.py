@@ -86,10 +86,16 @@ def _summary_for(row, score: float, explanation: list) -> str:
 
 def run_ml_anomaly_detection(conn, since_utc=None, host_ids=None,
                              top_k: int | None = None,
-                             threshold: float | None = None) -> list[dict]:
+                             threshold: float | None = None,
+                             shadow: bool = False) -> list[dict]:
     """Score recent processes and return detection dicts. Never raises.
 
     Returns rows shaped for `insert_detections`, plus the ML-specific columns.
+
+    `shadow=True` (the engine's incremental pass only) also scores the same processes with a
+    challenger model under a live trial, if one is running - see `ml_shadow`. Manual
+    "Run hunt now" rescans all history and would double-count the trial's traffic, so it
+    leaves this off.
     """
     top_k = DEFAULT_TOP_K if top_k is None else top_k
     threshold = DEFAULT_THRESHOLD if threshold is None else threshold
@@ -99,15 +105,35 @@ def run_ml_anomaly_detection(conn, since_utc=None, host_ids=None,
         return []
 
     try:
-        return _score(conn, since_utc, host_ids, top_k, threshold)
+        return _score(conn, since_utc, host_ids, top_k, threshold, shadow)
     except Exception as exc:                     # noqa: BLE001 - deliberately broad
         # A failure here must cost us ML findings, never rule findings.
         print(f"[ml] anomaly scoring skipped: {type(exc).__name__}: {exc}")
         return []
 
 
-def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict]:
+def select_candidates(frame, scores, top_k: int, threshold: float) -> list[int]:
+    """Row positions that become findings: the top-K per host, above the floor.
+
+    Shared with the shadow challenger (`ml_shadow`), so both models are held to exactly the
+    same alert budget and a trial compares models, not selection rules.
+    """
     import numpy as np
+
+    candidates = []
+    for host_id in sorted({int(h) for h in frame["host_id"].dropna()}):
+        mask = (frame["host_id"] == host_id).to_numpy()
+        idx = np.flatnonzero(mask)
+        if len(idx) == 0:
+            continue
+        ranked = idx[np.argsort(scores[idx])[::-1]]
+        candidates.extend(i for i in ranked[:top_k] if scores[i] >= threshold)
+    return candidates
+
+
+def _score(conn, since_utc, host_ids, top_k: int, threshold: float,
+           shadow: bool = False) -> list[dict]:
+    import time
 
     from server.engine import ml_anomaly, ml_features as mlf
 
@@ -125,6 +151,7 @@ def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict
     if len(frame) > MAX_ROWS_PER_RUN:
         frame = frame.tail(MAX_ROWS_PER_RUN)
 
+    started = time.perf_counter()
     stats = mlf.FeatureStats.from_dict(artefact.get("feature_stats") or {})
     X = mlf.transform(frame, stats=stats, tier=tier)
 
@@ -138,19 +165,21 @@ def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict
     X = X[model.feature_names]
 
     scores = model.score(X)
+    champion_ms = (time.perf_counter() - started) * 1000.0
     model_id = ml_registry.ensure_registered(conn, "anomaly", tier)
 
     # Rank within each host, then take the top-K above the floor.
-    candidates = []
     frame = frame.reset_index(drop=True)
-    for host_id in sorted({int(h) for h in frame["host_id"].dropna()}):
-        mask = (frame["host_id"] == host_id).to_numpy()
-        idx = np.flatnonzero(mask)
-        if len(idx) == 0:
-            continue
-        ranked = idx[np.argsort(scores[idx])[::-1]]
-        chosen = [i for i in ranked[:top_k] if scores[i] >= threshold]
-        candidates.extend(chosen)
+    candidates = select_candidates(frame, scores, top_k, threshold)
+
+    if shadow:
+        # Isolated like the whole ML layer: record_shadow_pass never raises, never writes a
+        # detection, and cannot change `scores` or `candidates`.
+        from server.engine import ml_shadow
+        ml_shadow.record_shadow_pass(
+            conn, frame=frame, tier=tier, champion_scores=scores,
+            champion_candidates=candidates, champion_ms=champion_ms,
+            top_k=top_k, threshold=threshold)
 
     if not candidates:
         return []
