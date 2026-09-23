@@ -1,4 +1,5 @@
-from agent.collectors import network, processes, persistence, logs, files_triage, docker_host, resources, agent_self
+from agent.collectors import (agent_self, docker_host, files_triage, logs, network,
+                              persistence, processes, resources, velociraptor)
 
 registry = {
     "network": network.collect,
@@ -9,4 +10,7 @@ registry = {
     "containers": docker_host.collect,
     "resources": resources.collect,
     "agent_self": agent_self.collect,
+    # On-demand only - deliberately absent from COLLECTOR_ORDER_VOLATILITY_FIRST
+    # so an artifact sweep never runs on the routine collection interval.
+    "velociraptor": velociraptor.collect,
 }

@@ -8,10 +8,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from agent import velociraptor_catalog as velo_catalog
 from server import db as database
 from server import security
 from server.engine import run_engine
 from server.engine import attack_mapper, reporter, soc_chain, timeline
+from server.engine import velociraptor as velociraptor_engine
 from server.engine.ioc_correlator import correlate_batch
 from server.engine.yara_scanner import compile_rules, scan_file
 
@@ -57,6 +59,8 @@ class HeartbeatRequest(BaseModel):
     agent_version: str | None = None
     telemetry_mode: str | None = None
     spool_count: int | None = None
+    # Agent-side probe: whether this endpoint has a usable Velociraptor binary.
+    velociraptor: dict | None = None
 
 
 class AgentStateRequest(BaseModel):
@@ -68,6 +72,16 @@ class AgentStateRequest(BaseModel):
 class CommandResultRequest(BaseModel):
     status: str = Field(pattern="^(done|failed)$")
     detail: dict | None = None
+
+
+class VelociraptorRequest(BaseModel):
+    """Analyst request for an on-demand artifact sweep.
+
+    Artifact names are validated against the shared allow-list before a command
+    is queued; an empty list means "the standard triage set for this platform".
+    """
+    artifacts: list[str] = Field(default_factory=list)
+    requested_by: str = "analyst-ui"
 
 
 class ResourceSampleIn(BaseModel):
@@ -164,7 +178,7 @@ def enroll(body: EnrollRequest, conn=Depends(get_conn)):
 
 # Natural-key columns stored bare in the ux_raw_*_dedupe indexes; every other
 # key column is indexed as COALESCE(col, default) (see server/db.py).
-_DEDUPE_BARE_COLUMNS = {"host_id", "ptype", "path"}
+_DEDUPE_BARE_COLUMNS = {"host_id", "ptype", "path", "artifact", "row_sha256"}
 _DEDUPE_INT_COLUMNS = {"pid", "local_port", "remote_port", "event_id"}
 
 
@@ -308,6 +322,26 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
             [host["id"], collection_id, received, item.get("path"), item.get("sha256"),
              item.get("size_bytes"), matches],
             ["host_id", "path", "sha256"],
+            received, collection_id,
+        ) else "deduped"] += 1
+    for item in artifacts.get("velociraptor") or []:
+        if not isinstance(item, dict) or "_error" in item:
+            continue
+        artifact_name = item.get("artifact")
+        row_json = item.get("row_json")
+        if not artifact_name or not row_json:
+            continue
+        if not isinstance(row_json, str):
+            row_json = json.dumps(row_json, default=str)
+        counts["inserted" if _upsert_observation(
+            conn, "raw_velociraptor",
+            ["host_id", "collection_id", "collected_at_utc", "artifact", "row_sha256",
+             "row_json", "path", "sha256", "remote_ip", "process_name", "pid"],
+            [host["id"], collection_id, received, artifact_name,
+             security.sha256_bytes(row_json.encode("utf-8", "replace")), row_json,
+             item.get("path"), (item.get("sha256") or None), item.get("remote_ip"),
+             item.get("process_name"), item.get("pid")],
+            ["host_id", "artifact", "row_sha256"],
             received, collection_id,
         ) else "deduped"] += 1
     containers_seen = set()
@@ -547,12 +581,12 @@ def _agent_state_changed(conn, host_id, desired, actor):
     database.audit(conn, actor, "agent_state_changed", {"host_id": host_id, "desired_state": desired})
 
 
-def _queue_command(conn, host_id, command, actor="analyst-ui"):
+def _queue_command(conn, host_id, command, actor="analyst-ui", args=None):
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     cur = conn.execute(
-        """INSERT INTO agent_commands (host_id, command, status, requested_by, created_at_utc)
-           VALUES (?,?,'pending',?,?)""",
-        (host_id, command, actor, now),
+        """INSERT INTO agent_commands (host_id, command, args, status, requested_by, created_at_utc)
+           VALUES (?,?,?,'pending',?,?)""",
+        (host_id, command, json.dumps(args) if args is not None else None, actor, now),
     )
     return cur.lastrowid
 
@@ -574,6 +608,13 @@ def agent_heartbeat(body: HeartbeatRequest, ctx=Depends(auth_host)):
            WHERE id=?""",
         (now, now, body.state, body.agent_version, host["id"]),
     )
+    # Agents that predate the Velociraptor feature simply do not send this; the
+    # stored status then keeps saying "unknown" rather than claiming "absent".
+    if body.velociraptor is not None:
+        conn.execute(
+            "UPDATE hosts SET velociraptor_status=?, velociraptor_checked_at_utc=? WHERE id=?",
+            (json.dumps(body.velociraptor, default=str), now, host["id"]),
+        )
     desired = conn.execute(
         "SELECT agent_desired_state FROM hosts WHERE id=?", (host["id"],)
     ).fetchone()["agent_desired_state"] or "running"
@@ -582,7 +623,7 @@ def agent_heartbeat(body: HeartbeatRequest, ctx=Depends(auth_host)):
     if desired == "running":
         commands = [
             dict(r) for r in conn.execute(
-                """SELECT id, command FROM agent_commands
+                """SELECT id, command, args FROM agent_commands
                    WHERE host_id=? AND status='pending' ORDER BY id LIMIT 5""",
                 (host["id"],),
             )
@@ -662,6 +703,124 @@ def request_collection(host_id: int, conn=Depends(get_conn)):
     conn.commit()
     return {"status": "queued", "host_id": host_id, "command_id": command_id,
             "note": "the endpoint collects on its next heartbeat"}
+
+
+@app.get("/api/v1/velociraptor/catalog")
+def velociraptor_catalog(os_type: str | None = None):
+    """The artifacts an analyst may request, optionally scoped to a platform.
+
+    This is the same allow-list the server enforces on a request and the agent
+    enforces before exec, published so the UI never offers something that would
+    be rejected.
+    """
+    if os_type:
+        return {"os_type": os_type, "artifacts": velo_catalog.for_platform(os_type),
+                "max_per_request": velo_catalog.MAX_ARTIFACTS_PER_REQUEST}
+    return {
+        "artifacts": [dict(meta, name=name, platforms=list(meta["platforms"]))
+                      for name, meta in sorted(velo_catalog.CATALOG.items())],
+        "default_triage": {k: list(v) for k, v in velo_catalog.DEFAULT_TRIAGE.items()},
+        "max_per_request": velo_catalog.MAX_ARTIFACTS_PER_REQUEST,
+    }
+
+
+@app.post("/api/v1/hosts/{host_id}/velociraptor")
+def request_velociraptor_collection(host_id: int, body: VelociraptorRequest,
+                                    conn=Depends(get_conn)):
+    """Queue an on-demand Velociraptor artifact sweep on an endpoint.
+
+    Delivered over the same heartbeat command channel as a manual collection.
+    Requested artifacts are validated against the allow-list here; the agent
+    validates them again before exec, so neither side alone decides what runs.
+    """
+    row = conn.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "host not found")
+    if not row["is_active"]:
+        raise HTTPException(409, "host API key is revoked")
+    if (row["agent_desired_state"] or "running") == "paused":
+        raise HTTPException(409, "agent is paused - resume it before requesting a sweep")
+
+    requested = body.artifacts or list(
+        velo_catalog.DEFAULT_TRIAGE.get(
+            "windows" if str(row["os_type"]).startswith("windows") else "linux", ()))
+    accepted, rejected = velo_catalog.validate(requested, os_type=row["os_type"])
+    if not accepted:
+        raise HTTPException(400, {"error": "no runnable artifacts in request",
+                                  "rejected": rejected})
+
+    command_id = _queue_command(conn, host_id, "velociraptor_collect",
+                                actor=body.requested_by, args={"artifacts": accepted})
+    database.audit(conn, body.requested_by, "velociraptor_collection_requested",
+                   {"host_id": host_id, "command_id": command_id, "artifacts": accepted,
+                    "rejected": rejected})
+    conn.commit()
+    return {"status": "queued", "host_id": host_id, "command_id": command_id,
+            "artifacts": accepted, "rejected": rejected,
+            "velociraptor": _velociraptor_host_status(row),
+            "note": "the endpoint runs the sweep on its next heartbeat"}
+
+
+@app.get("/api/v1/hosts/{host_id}/velociraptor")
+def list_velociraptor_rows(host_id: int, artifact: str | None = None, limit: int = 200,
+                           conn=Depends(get_conn)):
+    """Artifact rows collected from an endpoint, newest first."""
+    row = conn.execute("SELECT * FROM hosts WHERE id=?", (host_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "host not found")
+    where, params = ["host_id=?"], [host_id]
+    if artifact:
+        where.append("artifact=?")
+        params.append(artifact)
+    params.append(max(1, min(limit, 1000)))
+    rows = [dict(r) for r in conn.execute(
+        f"""SELECT id, artifact, collection_id, row_json, path, sha256, remote_ip,
+                   process_name, pid, first_seen_utc, last_seen_utc, observation_count
+            FROM raw_velociraptor WHERE {' AND '.join(where)}
+            ORDER BY last_seen_utc DESC, id DESC LIMIT ?""",
+        params,
+    )]
+    for item in rows:
+        try:
+            item["row"] = json.loads(item.pop("row_json") or "{}")
+        except json.JSONDecodeError:
+            item["row"] = {}
+    sweeps = [dict(r) for r in conn.execute(
+        """SELECT id, command, args, status, requested_by, created_at_utc,
+                  claimed_at_utc, finished_at_utc, result
+           FROM agent_commands
+           WHERE host_id=? AND command='velociraptor_collect'
+           ORDER BY id DESC LIMIT 10""",
+        (host_id,),
+    )]
+    return {"host_id": host_id, "hostname": row["hostname"],
+            "velociraptor": _velociraptor_host_status(row),
+            "summary": velociraptor_engine.summarise(conn, host_id),
+            "rows": rows, "sweeps": sweeps}
+
+
+def _velociraptor_host_status(row):
+    """Decode the agent's last Velociraptor probe for an endpoint.
+
+    "unknown" is distinct from "absent": an agent too old to report, or one that
+    has not heartbeated yet, has not told us the binary is missing.
+    """
+    try:
+        raw = row["velociraptor_status"]
+    except (KeyError, IndexError, TypeError):
+        return {"state": "unknown"}
+    if not raw:
+        return {"state": "unknown"}
+    try:
+        status = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {"state": "unknown"}
+    status["state"] = "ready" if status.get("present") else "absent"
+    try:
+        status["checked_at_utc"] = row["velociraptor_checked_at_utc"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    return status
 
 
 @app.post("/api/v1/hosts/{host_id}/scan")

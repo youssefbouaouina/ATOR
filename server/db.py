@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS hosts (
     agent_desired_state TEXT NOT NULL DEFAULT 'running',
     agent_reported_state TEXT NOT NULL DEFAULT 'unknown',
     agent_state_changed_at_utc TEXT,
-    last_heartbeat_utc TEXT
+    last_heartbeat_utc TEXT,
+    -- last agent-reported Velociraptor probe (JSON), so the UI can say whether
+    -- an endpoint can run artifacts before the analyst queues a sweep
+    velociraptor_status TEXT,
+    velociraptor_checked_at_utc TEXT
 );
 
 CREATE TABLE IF NOT EXISTS containers (
@@ -127,6 +131,35 @@ CREATE TABLE IF NOT EXISTS raw_files (
     last_seen_utc TEXT,
     observation_count INTEGER NOT NULL DEFAULT 1
 );
+
+-- Rows returned by an on-demand Velociraptor artifact sweep.
+--
+-- row_json holds the VQL row verbatim (artifact schemas vary far too much to
+-- model as columns); the promoted path/sha256/remote_ip/process_name columns
+-- exist so IOC correlation and the UI have something indexable. row_sha256 is
+-- the natural key: the same artifact re-run on an unchanged host must update
+-- one row rather than append a second copy of the same evidence.
+CREATE TABLE IF NOT EXISTS raw_velociraptor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host_id INTEGER NOT NULL REFERENCES hosts(id),
+    collection_id TEXT,
+    collected_at_utc TEXT NOT NULL,
+    artifact TEXT NOT NULL,
+    row_sha256 TEXT NOT NULL,
+    row_json TEXT NOT NULL,
+    path TEXT,
+    sha256 TEXT,
+    remote_ip TEXT,
+    process_name TEXT,
+    pid INTEGER,
+    first_seen_utc TEXT,
+    last_seen_utc TEXT,
+    observation_count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS ix_raw_velo_host ON raw_velociraptor(host_id, collected_at_utc);
+CREATE INDEX IF NOT EXISTS ix_raw_velo_artifact ON raw_velociraptor(artifact);
+CREATE INDEX IF NOT EXISTS ix_raw_velo_sha ON raw_velociraptor(sha256);
+CREATE INDEX IF NOT EXISTS ix_raw_velo_collection ON raw_velociraptor(collection_id);
 
 CREATE TABLE IF NOT EXISTS ioc_store (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -300,7 +333,8 @@ CREATE INDEX IF NOT EXISTS ix_agent_self_host_time ON agent_self_samples(host_id
 CREATE TABLE IF NOT EXISTS agent_commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     host_id INTEGER NOT NULL REFERENCES hosts(id),
-    command TEXT NOT NULL CHECK (command IN ('collect_now','detect_now')),
+    command TEXT NOT NULL CHECK (command IN ('collect_now','detect_now','velociraptor_collect')),
+    args TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending','claimed','done','failed','expired')),
     requested_by TEXT,
@@ -338,6 +372,11 @@ MIGRATIONS = {
         ("agent_reported_state", "TEXT NOT NULL DEFAULT 'unknown'"),
         ("agent_state_changed_at_utc", "TEXT"),
         ("last_heartbeat_utc", "TEXT"),
+        ("velociraptor_status", "TEXT"),
+        ("velociraptor_checked_at_utc", "TEXT"),
+    ),
+    "agent_commands": (
+        ("args", "TEXT"),
     ),
     "detections": (
         ("hit_count", "INTEGER NOT NULL DEFAULT 1"),
@@ -393,6 +432,9 @@ DEDUPE_INDEXES = (
     ("ux_raw_files_dedupe",
      "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_files_dedupe ON raw_files"
      "(host_id, path, COALESCE(sha256,''))"),
+    ("ux_raw_velociraptor_dedupe",
+     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_velociraptor_dedupe ON raw_velociraptor"
+     "(host_id, artifact, row_sha256)"),
     # Non-unique: speeds up the detection dedupe/recurrence lookup.
     ("ix_detections_dedupe",
      "CREATE INDEX IF NOT EXISTS ix_detections_dedupe ON detections"
@@ -569,6 +611,55 @@ def ensure_schema(conn):
     return added
 
 
+def ensure_command_types(conn):
+    """Widen agent_commands.command to accept newer command types.
+
+    SQLite cannot ALTER a CHECK constraint, so a database created before
+    velociraptor_collect existed still carries the two-value constraint and
+    would reject the INSERT. The table is small and append-only, so it is
+    rebuilt in place: create, copy, drop, rename, inside one transaction.
+
+    Returns True when a rebuild happened.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_commands'"
+    ).fetchone()
+    if not row or not row["sql"]:
+        return False                      # absent; SCHEMA creates it correctly
+    if "velociraptor_collect" in row["sql"]:
+        return False                      # already current
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(agent_commands)")]
+    carried = [c for c in columns if c != "args"]
+    conn.executescript(
+        """
+        PRAGMA foreign_keys=OFF;
+        BEGIN;
+        CREATE TABLE agent_commands__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id INTEGER NOT NULL REFERENCES hosts(id),
+            command TEXT NOT NULL
+                CHECK (command IN ('collect_now','detect_now','velociraptor_collect')),
+            args TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','claimed','done','failed','expired')),
+            requested_by TEXT,
+            created_at_utc TEXT NOT NULL,
+            claimed_at_utc TEXT,
+            finished_at_utc TEXT,
+            result TEXT
+        );
+        INSERT INTO agent_commands__new (%(cols)s)
+            SELECT %(cols)s FROM agent_commands;
+        DROP TABLE agent_commands;
+        ALTER TABLE agent_commands__new RENAME TO agent_commands;
+        CREATE INDEX IF NOT EXISTS ix_agent_commands_host ON agent_commands(host_id, status);
+        COMMIT;
+        PRAGMA foreign_keys=ON;
+        """ % {"cols": ",".join(carried)}
+    )
+    return True
+
+
 def dedupe_index_status(conn):
     """Return {index_name: exists} for the natural-key dedupe indexes."""
     present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
@@ -597,7 +688,16 @@ def init_db(db_path=None):
     try:
         conn.executescript(SCHEMA)
         ensure_schema(conn)
+        ensure_command_types(conn)
         conn.commit()
+        # raw_velociraptor is newer than the legacy-store guard below, so its
+        # dedupe index is built here regardless of how much history the database
+        # already holds; IntegrityError only if duplicates already exist.
+        try:
+            conn.execute(dict(DEDUPE_INDEXES)["ux_raw_velociraptor_dedupe"])
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
         # A brand new (or freshly purged) store has no duplicates yet, so the
         # dedupe indexes build instantly. On a legacy store they are left for
         # scripts/purge_host_data.py so startup is never blocked by a 4M-row scan.

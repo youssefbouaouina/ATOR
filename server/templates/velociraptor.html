@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Velociraptor{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-4">
+  <div>
+    <div class="section-label">Deep-dive collection</div>
+    <h1 class="h4 mb-1">Velociraptor artifacts</h1>
+    <p class="text-muted small mb-0">
+      Run forensic artifacts on an endpoint on demand. Rows arrive over the normal ingest
+      path with their own evidence manifest, and are correlated against the IOC watchlist
+      like any other artifact.
+    </p>
+  </div>
+  <form method="get" class="d-flex flex-wrap align-items-end gap-2">
+    <div>
+      <label for="velo-host" class="form-label small mb-1">Endpoint</label>
+      <select id="velo-host" name="host_id" class="form-select form-select-sm"
+              {% if not hosts %}disabled{% endif %}>
+        {% for h in hosts %}
+          <option value="{{ h.id }}" {{ 'selected' if h.id == selected }}>{{ h.hostname }} ({{ h.os_type }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-primary btn-sm" {% if not hosts %}disabled{% endif %}>Load</button>
+  </form>
+</div>
+
+{% if not selected_host %}
+<div class="card p-4 text-center">
+  <h2 class="h5">No endpoints available</h2>
+  <p class="text-muted mb-0">Enroll an endpoint before requesting an artifact sweep.</p>
+</div>
+{% else %}
+
+{% set velo = selected_host.velociraptor %}
+<div class="alert {{ 'alert-success' if velo.state == 'ready' else ('alert-warning' if velo.state == 'absent' else 'alert-secondary') }} small anim-rise">
+  {% if velo.state == 'ready' %}
+    <b>Ready.</b> {{ selected_host.hostname }} reports Velociraptor
+    <span class="mono">{{ velo.version or 'present' }}</span>
+    {% if velo.path %}at <span class="mono">{{ velo.path }}</span>{% endif %}
+    {% if velo.checked_at_utc %}<span class="text-muted">(checked <span data-ator-time="{{ velo.checked_at_utc }}">{{ velo.checked_at_utc }}</span>)</span>{% endif %}
+  {% elif velo.state == 'absent' %}
+    <b>Binary not found on this endpoint.</b>
+    {{ velo.reason or 'The agent could not locate a velociraptor binary.' }}
+    Place it in the agent install's <span class="mono">tools/</span> directory, on PATH, or set
+    <span class="mono">velociraptor_path</span> in the agent config. A sweep queued now will
+    fail with that reason recorded.
+  {% else %}
+    <b>Status unknown.</b> This agent has not reported a Velociraptor probe yet &mdash; it may
+    predate the feature, or not have heartbeated since it was installed.
+  {% endif %}
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-5">
+    <div class="card ator-card anim-rise">
+      <div class="card-header">Run artifacts</div>
+      <div class="card-body">
+        <form method="post" action="/ui/velociraptor/{{ selected_host.id }}/collect">
+          <p class="small text-muted">
+            Choose up to {{ max_per_request }} artifacts. Only the allow-listed, read-only
+            artifacts below can be requested &mdash; the agent re-checks the list before it
+            runs anything.
+          </p>
+          {% for a in available %}
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="artifacts"
+                   value="{{ a.name }}" id="art-{{ loop.index }}">
+            <label class="form-check-label" for="art-{{ loop.index }}">
+              <span class="mono small">{{ a.name }}</span>
+              <span class="badge bg-secondary">{{ a.category }}</span>
+              <span class="badge {{ 'bg-danger' if a.cost == 'high' else ('bg-warning text-dark' if a.cost == 'medium' else 'bg-success') }}">{{ a.cost }} cost</span>
+              {% if a.technique_id %}<span class="badge bg-dark">{{ a.technique_id }}</span>{% endif %}
+              {% if a.requires_tool %}<span class="badge bg-warning text-dark" title="Velociraptor downloads a third-party binary to run this">downloads tool</span>{% endif %}
+              <br><small class="text-muted">{{ a.description }}</small>
+            </label>
+          </div>
+          {% else %}
+          <p class="text-muted small mb-0">No catalog artifacts apply to {{ selected_host.os_type }}.</p>
+          {% endfor %}
+          <button type="submit" class="btn btn-primary btn-sm mt-2"
+                  {% if not available or selected_host.agent_desired_state == 'paused' %}disabled{% endif %}>
+            Queue sweep
+          </button>
+          {% if selected_host.agent_desired_state == 'paused' %}
+          <div class="form-text text-warning">Agent is paused &mdash; resume it from Endpoints first.</div>
+          {% else %}
+          <div class="form-text">The endpoint starts the sweep on its next heartbeat.</div>
+          {% endif %}
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card ator-card mb-3 anim-rise">
+      <div class="card-header">Recent sweeps</div>
+      <div class="card-body p-0">
+        <table class="table table-sm ator-table mb-0">
+          <thead><tr><th>Requested</th><th>Artifacts</th><th>Status</th><th>Outcome</th></tr></thead>
+          <tbody>
+          {% for s in sweeps %}
+            <tr>
+              <td class="mono small"><span data-ator-time="{{ s.created_at_utc }}">{{ s.created_at_utc }}</span></td>
+              <td class="mono small">{{ (s.args.artifacts or [])|join(', ') or '—' }}</td>
+              <td>
+                {% if s.status == 'done' %}<span class="badge bg-success">done</span>
+                {% elif s.status == 'failed' %}<span class="badge bg-danger">failed</span>
+                {% elif s.status == 'claimed' %}<span class="badge bg-info">running</span>
+                {% else %}<span class="badge bg-secondary">{{ s.status }}</span>{% endif %}
+              </td>
+              <td class="small">
+                {% if s.result %}
+                  {{ s.result.rows if s.result.rows is not none else 0 }} rows
+                  {% if s.result.delivery %}· {{ s.result.delivery }}{% endif %}
+                  {% for f in s.result.failed or [] %}
+                    <div class="text-danger mono" style="font-size:.75rem">{{ f.artifact }}: {{ f.error }}</div>
+                  {% endfor %}
+                {% else %}<span class="text-muted">pending</span>{% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4"><div class="empty-hint">No sweeps requested for this endpoint yet.</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card ator-card anim-rise">
+      <div class="card-header">Collected artifacts</div>
+      <div class="card-body p-0">
+        <table class="table table-sm table-hover ator-table mb-0">
+          <thead><tr><th>Artifact</th><th>Rows</th><th>Sweeps</th><th>Last seen</th><th></th></tr></thead>
+          <tbody>
+          {% for s in summary %}
+            <tr>
+              <td class="mono small">{{ s.artifact }}</td>
+              <td>{{ s.rows }}</td>
+              <td>{{ s.sweeps }}</td>
+              <td class="mono small"><span data-ator-time="{{ s.last_seen_utc }}">{{ s.last_seen_utc }}</span></td>
+              <td class="text-end">
+                <a class="btn btn-outline-info btn-sm"
+                   href="/velociraptor?host_id={{ selected_host.id }}&artifact={{ s.artifact }}">View rows</a>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5"><div class="empty-hint">No artifact rows collected from this endpoint yet.</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if artifact %}
+<div class="card ator-card mt-3 anim-rise">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Rows &mdash; <span class="mono">{{ artifact }}</span></span>
+    <a class="btn btn-outline-secondary btn-sm" href="/velociraptor?host_id={{ selected_host.id }}">Close</a>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm ator-table mb-0" data-interactive>
+      <thead><tr><th>Process</th><th>Path</th><th>SHA-256</th><th>Remote</th><th>Row</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="small">{{ r.process_name or '—' }}{% if r.pid %} <span class="text-muted mono">({{ r.pid }})</span>{% endif %}</td>
+          <td class="mono small text-truncate" style="max-width:22rem" title="{{ r.path }}">{{ r.path or '—' }}</td>
+          <td class="mono small">{{ r.sha256[:16] ~ '…' if r.sha256 else '—' }}</td>
+          <td class="mono small">{{ r.remote_ip or '—' }}</td>
+          <td><details><summary class="small text-muted">raw</summary><pre class="mono small mb-0" style="white-space:pre-wrap">{{ r.row_json }}</pre></details></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5"><div class="empty-hint">No rows stored for this artifact.</div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

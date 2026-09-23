@@ -41,6 +41,13 @@ def build(conn, host_id=None, limit=500):
         conn.execute(f"SELECT COUNT(*) FROM {table}{where}", params).fetchone()[0]
         for table in ("detections", "raw_logs", "raw_persistence", "evidence_manifests")
     )
+    # Velociraptor contributes one event per artifact per sweep (see below), so
+    # it must be counted the same way - counting its rows would report hundreds
+    # of timeline events that the timeline never shows.
+    total += conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM raw_velociraptor{where}"
+        " GROUP BY collection_id, artifact)", params,
+    ).fetchone()[0]
     if not limit:
         return {"events": [], "total": total, "skew": [], "skew_scope": "displayed_events"}
     bounded_params = params + [limit]
@@ -96,6 +103,29 @@ def build(conn, host_id=None, limit=500):
             "ref": f"persistence:{row['id']}",
         })
 
+    # One event per artifact per sweep, not per row: a single Pslist run returns
+    # hundreds of rows and would otherwise bury every other event on the timeline.
+    velo_where = (" WHERE " + " AND ".join(f"v.{c}" for c in conditions)) if conditions else ""
+    for row in conn.execute(
+        f"""SELECT v.artifact, v.collection_id, COUNT(*) AS rows,
+                   MAX(v.collected_at_utc) AS collected_at_utc,
+                   SUM(CASE WHEN v.sha256 IS NOT NULL THEN 1 ELSE 0 END) AS hashed,
+                   SUM(CASE WHEN v.remote_ip IS NOT NULL THEN 1 ELSE 0 END) AS remotes
+            FROM raw_velociraptor v{velo_where}
+            GROUP BY v.collection_id, v.artifact
+            ORDER BY collected_at_utc DESC LIMIT ?""",
+        bounded_params,
+    ):
+        events.append({
+            "ts": row["collected_at_utc"],
+            "kind": "velociraptor",
+            "severity": None,
+            "title": f"[VELOCIRAPTOR] {row['artifact']}",
+            "detail": (f"{row['rows']} rows · {row['hashed']} hashed · "
+                       f"{row['remotes']} remote addresses · collection_id={row['collection_id']}"),
+            "ref": f"velociraptor:{row['collection_id']}:{row['artifact']}",
+        })
+
     coll_where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     for row in conn.execute(
         f"""
@@ -120,10 +150,43 @@ def build(conn, host_id=None, limit=500):
     dated = [e for e in events if e["_dt"] is not None]
     dated.sort(key=lambda e: e["_dt"])
 
-    selected = dated[-limit:]
+    selected = _fair_share(dated, limit)
     merged = selected + undated[:max(0, limit - len(selected))]
     return {"events": merged, "total": total, "skew": _detect_skew(selected),
             "skew_scope": "displayed_events"}
+
+
+def _fair_share(dated, limit):
+    """Pick the events to display, without letting one source monopolise them.
+
+    Taking simply the newest ``limit`` events sounds right and behaves badly:
+    persistence and log rows are re-stamped on every collection cycle, so a host
+    with a few hundred of them carries the newest timestamp on all of them and
+    pushes every detection and artifact sweep out of the window. On a real host
+    that produced a timeline of 499 persistence rows and nothing else - the one
+    view an analyst opens to see what happened, showing the least interesting
+    thing it holds.
+
+    So each kind of event is guaranteed a share of the window, and whatever room
+    is left over is filled by recency as before. Ordering is unchanged:
+    chronological, oldest first.
+    """
+    if len(dated) <= limit:
+        return dated
+    by_kind = {}
+    for event in dated:
+        by_kind.setdefault(event["kind"], []).append(event)
+    share = max(5, limit // max(1, len(by_kind)))
+    kept, spare = [], []
+    for items in by_kind.values():
+        kept.extend(items[-share:])
+        spare.extend(items[:-share])
+    room = max(0, limit - len(kept))
+    if room and spare:
+        spare.sort(key=lambda e: e["_dt"])
+        kept.extend(spare[-room:])
+    kept.sort(key=lambda e: e["_dt"])
+    return kept[-limit:]
 
 
 def _detect_skew(sorted_events, threshold_days=45):

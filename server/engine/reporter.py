@@ -5,7 +5,7 @@ import re
 
 from datetime import datetime, timedelta, timezone
 
-from server.engine import soc_chain, timeline
+from server.engine import soc_chain, timeline, velociraptor
 from server.engine.attack_mapper import TACTIC_ORDER
 
 REPORTS_DIR = os.path.join(
@@ -177,6 +177,9 @@ def host_report_data(conn, host_id):
         "source_hypotheses": source_hypotheses,
         "root_cause_rows": root_cause_rows,
         "manifests": [dict(m) for m in manifests],
+        # Which deep-dive artifacts were collected, so a reader can tell whether
+        # a quiet section means "nothing found" or "never looked".
+        "velociraptor": velociraptor.summarise(conn, host_id, limit_per_artifact=0),
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
@@ -416,6 +419,7 @@ def generate_pdf(conn, host_id, out_path=None):
         ("7. Source of Compromise Assessment", "sec-source"),
         ("8. Timeline Highlights", "sec-timeline"),
         ("9. Evidence Integrity", "sec-manifests"),
+        ("10. Deep-Dive Artifacts (Velociraptor)", "sec-velociraptor"),
     ]:
         story.append(PH(f'<a href="#{key}" color="{LINK_COLOR}">{label}</a>', tocLink))
     story.append(Spacer(1, 4 * mm))
@@ -730,6 +734,45 @@ def generate_pdf(conn, host_id, out_path=None):
         'hashes above let recipients re-verify collection integrity independently.',
         body,
     ))
+    story.append(Spacer(1, 5 * mm))
+
+    story.append(anchored_heading("Deep-Dive Artifacts (Velociraptor)", "sec-velociraptor"))
+    velo_rows = data.get("velociraptor") or []
+    if velo_rows:
+        vrows = [["Artifact", "Rows", "Sweeps", "First collected (UTC)", "Last collected (UTC)"]]
+        for v in velo_rows:
+            vrows.append([
+                P(v["artifact"], cellMono),
+                P(str(v["rows"]), cell),
+                P(str(v["sweeps"]), cell),
+                P(_short_ts(v["first_seen_utc"]), cell),
+                P(_short_ts(v["last_seen_utc"]), cell),
+            ])
+        vtbl = RLTable(vrows, colWidths=[62 * mm, 14 * mm, 16 * mm, 45 * mm, 45 * mm])
+        vtbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2c3e50")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, HexColor("#f8fafc")]),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(vtbl)
+        story.append(Spacer(1, 3 * mm))
+        story.append(P(
+            'Artifacts collected on demand with Velociraptor, in addition to the routine agent '
+            'telemetry. Their rows were correlated against the IOC watchlist exactly as other '
+            'artifacts are; any resulting finding appears in the detection annex above.',
+            body,
+        ))
+    else:
+        story.append(P(
+            'No Velociraptor artifacts were collected from this endpoint. Sections above therefore '
+            'rest on routine agent telemetry alone - absence of a finding here means the deep-dive '
+            'artifacts were never run, not that they came back clean.',
+            body,
+        ))
 
     from reportlab.lib.pagesizes import A4
 

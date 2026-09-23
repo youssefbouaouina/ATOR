@@ -159,6 +159,31 @@ chatty exclusions in place so interesting events survive the window.
 The agent automatically prefers the Sysmon operational log when present;
 otherwise falls back to PowerShell `Get-WinEvent`.
 
+## Velociraptor (optional, for deep-dive artifacts)
+
+The `/velociraptor` page runs forensic artifacts on an endpoint on demand. It
+needs a standalone `velociraptor` binary present on that endpoint — ATOR does not
+ship one. Download it from the
+[Velociraptor releases page](https://github.com/Velocidex/velociraptor/releases)
+and place it where the agent looks, in priority order:
+
+1. `velociraptor_path` in `agent/config.json` (absolute path)
+2. the `ATOR_VELOCIRAPTOR` environment variable
+3. a `tools/` directory beside the agent install (`C:tor-agent	oolselociraptor.exe`)
+4. anywhere on `PATH`
+
+**The agent must run elevated on Windows.** The binary's manifest requests
+`highestAvailable`, so a non-elevated agent cannot launch it (WinError 740). The
+scheduled-task deployment (SYSTEM) satisfies this; a manual `python -m agent.agent
+loop` needs an Administrator shell.
+
+The agent probes for it on heartbeat (cached 15 min) and the Velociraptor page
+reports `ready` / `absent` / `unknown` per endpoint, so you can confirm placement
+before queueing a sweep. Endpoints without the binary are unaffected — every
+other part of the agent works exactly as before.
+
+Full design, the artifact allow-list and its limits: docs/VELOCIRAPTOR.md.
+
 ## Atomic Red Team validation
 
 See docs/VALIDATION.md. Requires an isolated test VM with admin PowerShell.
