@@ -21,6 +21,7 @@ proceeds untouched.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -61,10 +62,19 @@ def _summary_for(row, score: float, explanation: list) -> str:
     here made `/api/v1/timeline` raise JSONDecodeError for every host with an ML detection -
     so ML findings use the same shape, with the ML context added as extra keys.
     """
+    import pandas as pd
+
     out = {}
     for key in ("pid", "ppid", "name", "cmdline", "exe_path", "username"):
         value = row.get(key)
-        if value is not None and str(value) != "nan" and str(value):
+        # pd.isna, not a "nan" string check: pid/ppid are nullable Int64 (Phase 8), whose
+        # missing value is pd.NA and stringifies to "<NA>" - which the old check let through
+        # into the stored evidence as if it were a real parent pid.
+        try:
+            missing = value is None or bool(pd.isna(value))
+        except (TypeError, ValueError):
+            missing = False
+        if not missing and str(value):
             out[key] = str(value)[:300]
     drivers = ", ".join(f"{item['feature']}={item['deviation']}" for item in explanation[:3])
     out["ml_anomaly_score"] = f"{score:.4f}"
@@ -76,10 +86,16 @@ def _summary_for(row, score: float, explanation: list) -> str:
 
 def run_ml_anomaly_detection(conn, since_utc=None, host_ids=None,
                              top_k: int | None = None,
-                             threshold: float | None = None) -> list[dict]:
+                             threshold: float | None = None,
+                             shadow: bool = False) -> list[dict]:
     """Score recent processes and return detection dicts. Never raises.
 
     Returns rows shaped for `insert_detections`, plus the ML-specific columns.
+
+    `shadow=True` (the engine's incremental pass only) also scores the same processes with a
+    challenger model under a live trial, if one is running - see `ml_shadow`. Manual
+    "Run hunt now" rescans all history and would double-count the trial's traffic, so it
+    leaves this off.
     """
     top_k = DEFAULT_TOP_K if top_k is None else top_k
     threshold = DEFAULT_THRESHOLD if threshold is None else threshold
@@ -89,15 +105,35 @@ def run_ml_anomaly_detection(conn, since_utc=None, host_ids=None,
         return []
 
     try:
-        return _score(conn, since_utc, host_ids, top_k, threshold)
+        return _score(conn, since_utc, host_ids, top_k, threshold, shadow)
     except Exception as exc:                     # noqa: BLE001 - deliberately broad
         # A failure here must cost us ML findings, never rule findings.
         print(f"[ml] anomaly scoring skipped: {type(exc).__name__}: {exc}")
         return []
 
 
-def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict]:
+def select_candidates(frame, scores, top_k: int, threshold: float) -> list[int]:
+    """Row positions that become findings: the top-K per host, above the floor.
+
+    Shared with the shadow challenger (`ml_shadow`), so both models are held to exactly the
+    same alert budget and a trial compares models, not selection rules.
+    """
     import numpy as np
+
+    candidates = []
+    for host_id in sorted({int(h) for h in frame["host_id"].dropna()}):
+        mask = (frame["host_id"] == host_id).to_numpy()
+        idx = np.flatnonzero(mask)
+        if len(idx) == 0:
+            continue
+        ranked = idx[np.argsort(scores[idx])[::-1]]
+        candidates.extend(i for i in ranked[:top_k] if scores[i] >= threshold)
+    return candidates
+
+
+def _score(conn, since_utc, host_ids, top_k: int, threshold: float,
+           shadow: bool = False) -> list[dict]:
+    import time
 
     from server.engine import ml_anomaly, ml_features as mlf
 
@@ -115,6 +151,7 @@ def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict
     if len(frame) > MAX_ROWS_PER_RUN:
         frame = frame.tail(MAX_ROWS_PER_RUN)
 
+    started = time.perf_counter()
     stats = mlf.FeatureStats.from_dict(artefact.get("feature_stats") or {})
     X = mlf.transform(frame, stats=stats, tier=tier)
 
@@ -128,34 +165,53 @@ def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict
     X = X[model.feature_names]
 
     scores = model.score(X)
+    champion_ms = (time.perf_counter() - started) * 1000.0
     model_id = ml_registry.ensure_registered(conn, "anomaly", tier)
 
     # Rank within each host, then take the top-K above the floor.
-    candidates = []
     frame = frame.reset_index(drop=True)
-    for host_id in sorted({int(h) for h in frame["host_id"].dropna()}):
-        mask = (frame["host_id"] == host_id).to_numpy()
-        idx = np.flatnonzero(mask)
-        if len(idx) == 0:
-            continue
-        ranked = idx[np.argsort(scores[idx])[::-1]]
-        chosen = [i for i in ranked[:top_k] if scores[i] >= threshold]
-        candidates.extend(chosen)
+    candidates = select_candidates(frame, scores, top_k, threshold)
+
+    if shadow:
+        # Isolated like the whole ML layer: record_shadow_pass never raises, never writes a
+        # detection, and cannot change `scores` or `candidates`.
+        from server.engine import ml_shadow
+        ml_shadow.record_shadow_pass(
+            conn, frame=frame, tier=tier, champion_scores=scores,
+            champion_candidates=candidates, champion_ms=champion_ms,
+            top_k=top_k, threshold=threshold)
 
     if not candidates:
         return []
 
     explanations = model.explain(X.iloc[candidates], top_k=5)
-    already = _existing_ml_detections(conn)
+    by_process, legacy = _existing_ml_detections(conn)
 
     detections = []
     for position, row_index in enumerate(candidates):
         row = frame.iloc[row_index]
         raw_id = row.get("id")
-        key = (int(row["host_id"]), str(row.get("collection_id")), int(raw_id)
-               if raw_id is not None and not _isnan(raw_id) else -1)
-        if key in already:
-            continue                             # already reported in an earlier run
+        process_key = _process_key(row)
+        known = by_process.get(process_key)
+        if known is not None:
+            # Same process instance, flagged again. It is one finding: record the
+            # recurrence instead of opening a new detection (see _existing_ml_detections).
+            # Only an observation NEWER than the last sighting counts. Without this check
+            # a manual "Run hunt now", which rescans all history, re-counted old sweeps on
+            # every click and the sighting count grew with the number of clicks.
+            observed = str(row.get("collected_at_utc") or "")
+            if observed and observed > (known["last_seen"] or ""):
+                detections.append({
+                    "existing_id": known["id"],
+                    "collection_id": row.get("collection_id"),
+                    "detected_at_utc": observed,
+                })
+                known["last_seen"] = observed        # two rows in one run count once each
+            continue
+        legacy_key = (int(row["host_id"]), str(row.get("collection_id")), int(raw_id)
+                      if raw_id is not None and not _isnan(raw_id) else -1)
+        if legacy_key in legacy:
+            continue                             # reported before process keys existed
         score = float(scores[row_index])
         explanation = explanations[position]
         detections.append({
@@ -172,6 +228,7 @@ def _score(conn, since_utc, host_ids, top_k: int, threshold: float) -> list[dict
             "ml_explanation": json.dumps({
                 "tier": tier,
                 "raw_process_id": None if raw_id is None or _isnan(raw_id) else int(raw_id),
+                "process_key": process_key,
                 "top_features": explanation,
                 "note": "deviation from the fitted benign baseline, in robust (MAD) units; "
                         "a hint for triage, not a causal attribution",
@@ -187,44 +244,117 @@ def _isnan(value) -> bool:
         return False
 
 
-def _existing_ml_detections(conn) -> set:
-    """Keys of ML detections already recorded, so repeated runs do not duplicate them."""
-    out = set()
+#: The fields that identify one process instance. They mirror the v2 raw_processes
+#: dedupe key (server/db.py), so "one raw row" and "one ML finding" mean the same thing.
+_PROCESS_IDENTITY = ("pid", "name", "cmdline", "exe_path", "sha256", "create_time_utc")
+
+
+def _process_key(row) -> str:
+    """Stable identity of a process instance, independent of which collection holds it.
+
+    Keying findings on the collection was the defect: the DFIR ingest now moves a
+    re-observed process into the newest collection, so a long-running suspicious
+    process got a brand-new detection on every sweep - measured at one per sweep,
+    i.e. 60 an hour with the agent's default loop.
+    """
+    def norm(value):
+        if value is None or _isnan(value):
+            return ""
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))                # a pid must not hash differently as 4.0
+        return str(value)
+
+    parts = [norm(row.get("host_id"))] + [norm(row.get(name)) for name in _PROCESS_IDENTITY]
+    return hashlib.sha1("\x1f".join(parts).encode("utf-8", "replace")).hexdigest()
+
+
+def _existing_ml_detections(conn) -> tuple[dict, set]:
+    """Findings already recorded: ({process_key: {id, last_seen}}, {legacy keys}).
+
+    `last_seen` is the newest observation already counted for the finding, so a rescan of
+    old history is recognised as nothing new.
+
+    Detections created before process keys existed carry only raw_process_id. Their
+    key is rebuilt from that raw row when it still exists, so the upgrade does not
+    open one more duplicate per already-flagged process. Anything that cannot be
+    resolved falls back to the old (host, collection, raw id) key.
+    """
+    by_process: dict[str, dict] = {}
+    legacy: set = set()
     try:
         rows = conn.execute(
-            """SELECT host_id, collection_id, ml_explanation FROM detections
-               WHERE rule_type = ?""", (RULE_TYPE_ANOMALY,)).fetchall()
+            """SELECT id, host_id, collection_id, ml_explanation,
+                      COALESCE(last_seen_utc, detected_at_utc) AS last_seen
+               FROM detections WHERE rule_type = ? ORDER BY id""",
+            (RULE_TYPE_ANOMALY,)).fetchall()
     except Exception:                            # noqa: BLE001 - pre-migration database
-        return out
+        return by_process, legacy
+
+    unresolved: dict[int, dict] = {}
     for row in rows:
         raw_id = -1
+        entry = {"id": row["id"], "last_seen": str(row["last_seen"] or "")}
         try:
             payload = json.loads(row["ml_explanation"] or "{}")
+            if payload.get("process_key"):
+                by_process.setdefault(payload["process_key"], entry)
+                continue
             if payload.get("raw_process_id") is not None:
                 raw_id = int(payload["raw_process_id"])
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-        out.add((row["host_id"], row["collection_id"], raw_id))
-    return out
+        legacy.add((row["host_id"], row["collection_id"], raw_id))
+        if raw_id >= 0:
+            unresolved[raw_id] = entry
+
+    if unresolved:
+        wanted = ["host_id"] + list(_PROCESS_IDENTITY)
+        try:
+            present = {r[1] for r in conn.execute("PRAGMA table_info(raw_processes)")}
+            select = ", ".join(c if c in present else f"NULL AS {c}" for c in wanted)
+            ids = list(unresolved)
+            for start in range(0, len(ids), 500):          # SQLite parameter limit
+                chunk = ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                for raw in conn.execute(
+                        f"SELECT id, {select} FROM raw_processes WHERE id IN ({marks})", chunk):
+                    by_process.setdefault(_process_key(dict(raw)), unresolved[raw["id"]])
+        except Exception:                        # noqa: BLE001 - legacy keys still apply
+            pass
+    return by_process, legacy
 
 
 def insert_ml_detections(conn, detections: list[dict]) -> list[int]:
-    """Insert ML detections including their ML-specific columns.
+    """Write ML detections; return the ids of NEW findings only.
+
+    A dict carrying `existing_id` is a recurrence of a finding already on record: it
+    bumps that row's hit_count/last_seen_utc and moves it to the newest collection,
+    the same convention `engine.insert_detections` uses for rule hits. Returning only
+    new ids keeps that contract too - callers enrich and evaluate policies for genuinely
+    new findings, not for every sighting of an old one.
 
     Separate from `engine.insert_detections` because that function writes the columns the
     deterministic detectors use; widening it would make every rule hit carry empty ML fields.
     """
     ids = []
     for det in detections:
+        if det.get("existing_id") is not None:
+            conn.execute(
+                """UPDATE detections SET hit_count = COALESCE(hit_count, 1) + 1,
+                                         last_seen_utc = ?, collection_id = ?
+                   WHERE id = ?""",
+                (det.get("detected_at_utc"), det.get("collection_id"), det["existing_id"]))
+            continue
         cur = conn.execute(
             """INSERT INTO detections (host_id, collection_id, rule_type, rule_name,
                                        severity, technique_id, summary, detected_at_utc,
-                                       anomaly_score, ml_model_id, ml_explanation)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                       anomaly_score, ml_model_id, ml_explanation,
+                                       hit_count, last_seen_utc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (det["host_id"], det.get("collection_id"), det["rule_type"], det["rule_name"],
              det["severity"], det.get("technique_id"), det["summary"],
              det["detected_at_utc"], det.get("anomaly_score"), det.get("ml_model_id"),
-             det.get("ml_explanation")))
+             det.get("ml_explanation"), det["detected_at_utc"]))
         ids.append(cur.lastrowid)
     conn.commit()
     return ids

@@ -802,9 +802,9 @@ def build(train_db: str = DEFAULT_TRAIN_DB, corpus_dir: str = otrf.DEFAULT_DIR,
         # keeps every raw event as a distinct sample, and import_capture uses plain
         # INSERTs. Without this, a natural-key collision raises sqlite3.IntegrityError
         # and the whole capture is skipped, yielding an empty corpus.
-        for _ux in ("ux_raw_processes_dedupe", "ux_raw_connections_dedupe",
-                    "ux_raw_persistence_dedupe", "ux_raw_logs_dedupe", "ux_raw_files_dedupe"):
-            conn.execute(f"DROP INDEX IF EXISTS {_ux}")
+        # Driven by the index registry rather than a list of names: the v2 rename of
+        # the logs/processes indexes would otherwise have been silently skipped here.
+        database.drop_dedupe_indexes(conn)
         conn.executescript(CORPUS_SCHEMA)
         conn.commit()
 

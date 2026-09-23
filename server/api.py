@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -226,14 +227,35 @@ def _upsert_observation(conn, table, columns, values, key_columns, received, col
     return True
 
 
+def _payload_sha256(payload_json):
+    """Hash of the event payload in canonical form - the v2 log identity.
+
+    Key order is normalised first. Two re-sends of one event must hash the same
+    even if a serialiser orders keys differently, or the agent's overlapping
+    re-send window would be stored twice. A payload that is not valid JSON is
+    hashed as-is.
+    """
+    text = payload_json if isinstance(payload_json, str) else json.dumps(payload_json)
+    try:
+        text = json.dumps(json.loads(text), sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        pass
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
 def _insert_log(conn, row):
-    """Insert a log event once; identical events re-sent by the agent are dropped."""
+    """Insert a log event once; identical events re-sent by the agent are dropped.
+
+    "Identical" includes the payload. The agent timestamps events to the second,
+    so source+second+event_id+provider alone collapsed genuinely different events
+    that shared a second (a burst of process creations kept only its first).
+    """
     return conn.execute(
         """INSERT INTO raw_logs (host_id, collection_id, collected_at_utc, source, event_id,
-                                 event_time_utc, provider, computer, payload_json)
-           VALUES (?,?,?,?,?,?,?,?,?)
+                                 event_time_utc, provider, computer, payload_json, payload_sha256)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT DO NOTHING""",
-        row,
+        tuple(row) + (_payload_sha256(row[8]),),
     ).rowcount
 
 
@@ -269,7 +291,10 @@ def ingest(payload: IngestRequest, background: BackgroundTasks, ctx=Depends(auth
              # Older agents do not send this; NULL is the honest value for "not reported"
              # and the ML timing features skip the row rather than inventing a time.
              item.get("create_time_utc")],
-            ["host_id", "pid", "name", "cmdline", "exe_path", "sha256"],
+            # create_time_utc is part of the identity: a new process that reuses a PID
+            # with the same command line is a different process, not a re-observation.
+            # Without it the new instance inherited the old one's parent and start time.
+            ["host_id", "pid", "name", "cmdline", "exe_path", "sha256", "create_time_utc"],
             received, collection_id,
         )
         counts["inserted" if inserted else "deduped"] += 1
@@ -2250,20 +2275,25 @@ async def ml_score(body: MlScoreRequest):
             hits = run_ml_anomaly_detection(
                 conn, host_ids=host_ids, top_k=body.top_k, threshold=body.threshold)
             ids = insert_ml_detections(conn, hits) if (hits and body.persist) else []
+            # A hit carrying existing_id is a process already on record, seen again. It
+            # updates that finding's hit count; it is not a new finding.
+            new_hits = [h for h in hits if h.get("existing_id") is None]
+            recurring = len(hits) - len(new_hits)
             database.audit(conn, "analyst", "ml_manual_score",
-                           {"host_id": body.host_id, "found": len(hits),
-                            "persisted": len(ids)})
+                           {"host_id": body.host_id, "found": len(new_hits),
+                            "recurring": recurring, "persisted": len(ids)})
             conn.commit()
             return {
                 "scored": True,
-                "detections_found": len(hits),
+                "detections_found": len(new_hits),
+                "detections_recurring": recurring,
                 "detections_persisted": len(ids),
                 "detection_ids": ids,
                 # Returned even when persist=False, so the UI can preview without writing.
                 "findings": [
                     {k: v for k, v in hit.items() if k != "ml_explanation"} | {
                         "explanation": json.loads(hit.get("ml_explanation") or "{}")}
-                    for hit in hits
+                    for hit in new_hits
                 ],
             }
         finally:
@@ -2368,3 +2398,56 @@ def ml_drift_status(limit: int = 50, conn=Depends(get_conn)):
         "retrain_recommended": bool(shifted),
         "thresholds": {"stable_below": 0.10, "shifted_above": 0.25},
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: analyst verdicts on ML leads, and the weekly MLOps pipeline status.
+# ---------------------------------------------------------------------------
+
+class MlFeedbackRequest(BaseModel):
+    detection_id: int
+    # 'clear' removes an earlier verdict, so a mis-click is never permanent.
+    verdict: str = Field(pattern="^(confirmed|benign|clear)$")
+    note: str | None = Field(default=None, max_length=500)
+
+
+@app.post("/api/v1/ml/feedback")
+def ml_feedback(body: MlFeedbackRequest, conn=Depends(get_conn)):
+    """Record an analyst's verdict on an ML lead.
+
+    It feeds the weekly retrain (ml/mlops/data.py): a lead dismissed as benign rejoins the
+    benign baseline, unless a deterministic rule also fired on that process. A confirmed
+    threat is never used as benign, and becomes part of the "confirmed threats kept"
+    regression check every future model must pass.
+    """
+    row = conn.execute("SELECT rule_type FROM detections WHERE id=?",
+                       (body.detection_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "detection not found")
+    if row["rule_type"] != "ml_anomaly":
+        raise HTTPException(400, "verdicts are recorded for behavioural (ML) leads only")
+    if body.verdict == "clear":
+        conn.execute("DELETE FROM ml_feedback WHERE detection_id=?", (body.detection_id,))
+    else:
+        conn.execute(
+            """INSERT INTO ml_feedback (detection_id, verdict, note, recorded_at_utc)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(detection_id) DO UPDATE SET verdict=excluded.verdict,
+                   note=excluded.note, recorded_at_utc=excluded.recorded_at_utc""",
+            (body.detection_id, body.verdict, body.note, database.now_iso()))
+    database.audit(conn, "analyst", "ml_feedback",
+                   {"detection_id": body.detection_id, "verdict": body.verdict})
+    conn.commit()
+    return {"detection_id": body.detection_id, "verdict": None if body.verdict == "clear"
+            else body.verdict}
+
+
+@app.get("/api/v1/ml/ops")
+def ml_ops_status(conn=Depends(get_conn)):
+    """Weekly MLOps pipeline: models in service, trials, recent runs, attention items."""
+    from server.engine import ml_ops, ml_registry
+    try:
+        models = ml_registry.describe(conn).get("models") or []
+    except Exception:                            # noqa: BLE001
+        models = []
+    return ml_ops.ops_view(conn, models)

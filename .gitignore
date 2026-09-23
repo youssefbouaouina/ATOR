@@ -30,6 +30,9 @@ models/
 # downloaded third-party corpora (OTRF, ~85 MB) - refetched by ml.datasets.otrf
 data/external/
 data/interim/
+# weekly MLOps pipeline state: run reports, staging DB, lock, PAUSED/FROZEN flags.
+# Anchored with a leading slash: a bare "mlops/" would also ignore the ml/mlops/ source.
+/mlops/
 # generated evaluation figures under reports_ml/ ARE committed (deliverables);
 # only scratch output is ignored
 reports_ml/scratch/
@@ -46,3 +49,9 @@ backups/
 
 # ---- Agent runtime config may hold API credentials once enrolled ----
 agent/config.json
+
+# ---- Duplicate clone accidentally nested inside this working tree ----
+# ATOR/ is a second clone of this same repo. It was ignored on the ML branch and the
+# line was lost in the DFIR-only/ML merge. Without it, `git add -A` would stage the
+# nested repository as an embedded gitlink. Ignored, not deleted - owner's call.
+ATOR/

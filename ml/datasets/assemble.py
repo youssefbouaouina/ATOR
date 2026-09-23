@@ -146,6 +146,24 @@ def _real_host_ids(conn) -> list[int]:
         "SELECT id FROM hosts WHERE client_id NOT LIKE ?", (DEMO_CLIENT_PREFIX + "%",))]
 
 
+def _training_exclusions(conn) -> dict[int, str]:
+    """raw_process_id -> reason, from an MLOps snapshot's `ml_training_exclusions`.
+
+    The table exists only in the snapshot the weekly pipeline takes of the live DB
+    (ml/mlops/data.py), never in the live DB itself. It lists local rows that must not be
+    assumed benign: anything a detector flagged, its descendants, rows near an incident,
+    rows still inside the cooling-off window. Absent table = no exclusions, which keeps a
+    manual `train_* --live-db ator_dfir.db` behaving exactly as before.
+    """
+    present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ml_training_exclusions'"
+    ).fetchone()
+    if not present:
+        return {}
+    return {int(r[0]): str(r[1]) for r in conn.execute(
+        "SELECT raw_process_id, reason FROM ml_training_exclusions")}
+
+
 def load(train_db: str = DEFAULT_TRAIN_DB, live_db: str | None = DEFAULT_LIVE_DB,
          include_local: bool = True) -> Dataset:
     """Build the dataset. Features are materialised later, per CV fold."""
@@ -185,9 +203,21 @@ def load(train_db: str = DEFAULT_TRAIN_DB, live_db: str | None = DEFAULT_LIVE_DB
                 "WHERE h.client_id LIKE ?", (DEMO_CLIENT_PREFIX + "%",)).fetchone()[0]
             local = (mlf.extract_process_frame(conn, host_ids=real_hosts)
                      if real_hosts else pd.DataFrame())
+            exclusions = _training_exclusions(conn)
         finally:
             conn.close()
         meta["local_demo_rows_excluded"] = int(demo_excluded)
+        if exclusions and not local.empty:
+            # Dropped AFTER feature extraction, not deleted from the snapshot beforehand:
+            # the remaining rows keep the parent/sibling features they have at serve time.
+            excluded_ids = set(exclusions)
+            keep = ~local["id"].isin(excluded_ids)
+            by_reason: dict[str, int] = {}
+            for raw_id in local.loc[~keep, "id"]:
+                reason = exclusions[int(raw_id)]
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+            meta["local_rows_excluded_by_reason"] = by_reason
+            local = local.loc[keep].reset_index(drop=True)
         if not local.empty:
             frames.append(local)
             ys.append(np.full(len(local), LABEL_BENIGN))

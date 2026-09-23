@@ -100,13 +100,11 @@
 (function () {
   "use strict";
 
-  // Server LAN IP discovered server-side. This is what REMOTE endpoints must
-  // use - NOT 127.0.0.1 (which points at the endpoint itself).
-  const serverUrl = new URL({{ request.base_url|string|tojson }});
-  if (["localhost", "127.0.0.1", "[::1]"].includes(serverUrl.hostname)) {
-    serverUrl.hostname = {{ lan_ip|default('127.0.0.1')|tojson }};
-  }
-  const SERVER_BASE = serverUrl.href.replace(/\/$/, "");
+  // Address REMOTE endpoints must use - never 127.0.0.1, which on the endpoint points at
+  // the endpoint itself. Chosen server-side by ui.enrollment_server_url(): ATOR_PUBLIC_URL,
+  // else the address this page was opened with, else this server's address on the
+  // enrollment subnet (ATOR_ENROLL_SUBNET, default 192.168.50.0/24).
+  const SERVER_BASE = {{ server_url|tojson }}.replace(/\/$/, "");
 
   // Linux and Docker hosts use the shell bootstrap; Windows uses PowerShell.
   function isWindows(osType) {

@@ -28,7 +28,8 @@ from ml.evaluation import harness as H
 from server.engine import ml_features as mlf, ml_tactic
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
+# Same override the serving registry honours (server/engine/ml_registry.py).
+MODELS_DIR = os.environ.get("ATOR_ML_MODEL_DIR", os.path.join(_PROJECT_ROOT, "models"))
 REPORTS_DIR = os.path.join(_PROJECT_ROOT, "reports_ml")
 
 
@@ -208,10 +209,12 @@ def fit_final(dataset: A.Dataset, tier: str = mlf.TIER_T1):
     return model, stats
 
 
-def save(model, stats, tier: str, metrics: dict) -> str:
+def save(model, stats, tier: str, metrics: dict,
+         models_dir: str | None = None) -> str:
     import joblib
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    path = os.path.join(MODELS_DIR, f"tactic_{tier}.joblib")
+    models_dir = models_dir or MODELS_DIR
+    os.makedirs(models_dir, exist_ok=True)
+    path = os.path.join(models_dir, f"tactic_{tier}.joblib")
     joblib.dump({
         "kind": "tactic", "tier": tier, "payload": model.to_payload(),
         "feature_stats": stats.to_dict(),
@@ -228,6 +231,9 @@ def main() -> int:
     ap.add_argument("--live-db", default=A.DEFAULT_LIVE_DB)
     ap.add_argument("--splits", type=int, default=5)
     ap.add_argument("--tier", choices=[mlf.TIER_T1, mlf.TIER_T2], default=mlf.TIER_T1)
+    ap.add_argument("--models-dir", default=None,
+                    help="where --save writes (default: the served models/ directory). "
+                         "The MLOps pipeline points this at a candidate directory.")
     ap.add_argument("--save", action="store_true")
     ap.add_argument("--report", default=os.path.join(REPORTS_DIR, "tactic_eval.json"))
     args = ap.parse_args()
@@ -245,7 +251,7 @@ def main() -> int:
 
     if args.save:
         model, stats = fit_final(dataset, args.tier)
-        print(f"saved: {save(model, stats, args.tier, report)}")
+        print(f"saved: {save(model, stats, args.tier, report, models_dir=args.models_dir)}")
         print(f"classes: {model.classes_}")
     return 0
 

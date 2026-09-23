@@ -1,263 +1,612 @@
 {% extends "base.html" %}
-{% block title %}ML Analytics{% endblock %}
+{% block title %}Behavioural Threat Hunting{% endblock %}
 {% block content %}
+{#
+  Written for security analysts. Every model output reaching this page has been translated by
+  server/engine/ml_vocabulary.py: indicators instead of feature names, threat likelihood instead
+  of calibrated probability, rarity instead of percentile, lab results instead of PR-AUC. The
+  technical view is kept, collapsed, at the bottom for data scientists.
+#}
+<style>
+  .ind-bars { display: inline-flex; gap: 2px; vertical-align: middle; margin-right: 4px; }
+  .ind-bars span { width: 4px; height: 11px; border-radius: 1px; background: var(--ator-muted); opacity: .22; }
+  .ind-bars span.on { opacity: 1; background: var(--ator-high); }
+  .ind-chip { display: inline-flex; align-items: center; gap: 5px; font-size: .78rem; padding: 2px 8px;
+              border-radius: 999px; background: var(--ator-accent-soft); color: var(--ator-ink);
+              margin: 1px 4px 3px 0; white-space: nowrap; }
+  .ind-chip i { color: var(--ator-accent); }
+  .lead-row { cursor: pointer; }
+  .lead-row:hover { background: var(--ator-accent-soft); }
+  .evidence dt { font-size: .7rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+                 color: var(--ator-muted); }
+  .evidence dd { margin-bottom: .5rem; }
+  .cmdline { font-family: var(--bs-font-monospace); font-size: .78rem; white-space: pre-wrap;
+             word-break: break-all; background: var(--ator-bg); border: 1px solid var(--ator-border);
+             border-radius: 6px; padding: 6px 8px; margin: 0; }
+  .engine + .engine { border-top: 1px solid var(--ator-border); }
+  .engine .engine-ico { font-size: 1.35rem; color: var(--ator-accent); }
+  .results li { font-size: .82rem; }
+  .how dt { font-weight: 700; font-size: .82rem; }
+  .how dd { font-size: .82rem; color: var(--ator-muted); }
+  .lead-filters { background: var(--ator-bg); }
+  .lead-filters .btn-check:checked + .btn { background: var(--ator-accent); border-color: var(--ator-accent); color: #fff; }
+  #leadResults { transition: opacity .12s ease; min-height: 120px; }
+  #leadResults[data-loading="1"] { opacity: .45; pointer-events: none; }
+  .lead-pager .page-link { padding: .15rem .5rem; font-size: .8rem; }
+  .verdict-tag { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+  .verdict-confirmed { background: var(--ator-critical, #b42318); color: #fff; }
+  .verdict-benign { background: var(--ator-border); color: var(--ator-ink); }
+  .ops-fact .label { font-size: .7rem; font-weight: 700; letter-spacing: .05em;
+                     text-transform: uppercase; color: var(--ator-muted); }
+  .ops-bar { height: 6px; border-radius: 3px; background: var(--ator-border); overflow: hidden; }
+  .ops-bar > span { display: block; height: 100%; background: var(--ator-accent); }
+</style>
 
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0">ML Behavioural Analytics <span class="text-muted small">(Layer 4.5)</span></h4>
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
-    <button class="btn btn-sm btn-outline-primary" id="mlScoreBtn">Score now</button>
-    <button class="btn btn-sm btn-outline-secondary" id="mlRiskBtn">Recompute risk</button>
+    <div class="section-label">Machine-learning detections &middot; Layer 4.5</div>
+    <h4 class="mb-0">Behavioural Threat Hunting</h4>
+    <p class="text-muted small mb-0 mt-1">
+      Processes that no signature caught but that behave unusually or resemble known attack
+      activity. These are <b>leads to investigate</b>, not rule matches &mdash; verify before acting.
+    </p>
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-primary btn-elevate" id="mlScoreBtn">
+      <i class="bi bi-search me-1"></i>Run hunt now</button>
+    <button class="btn btn-sm btn-outline-secondary" id="mlRiskBtn">
+      <i class="bi bi-arrow-repeat me-1"></i>Refresh host risk</button>
   </div>
 </div>
 
 {% if not ml.available %}
 <div class="alert alert-warning">
-  <strong>ML layer unavailable.</strong> {{ ml.reason }}<br>
-  <span class="small mono">pip install -r requirements-ml.txt &amp;&amp;
-        python -m ml.training.train_anomaly --save</span>
-  <div class="small mt-2 text-muted">
-    Detection is unaffected &mdash; YARA, Sigma and IOC correlation continue to run normally.
+  <strong><i class="bi bi-exclamation-triangle me-1"></i>ML layer unavailable &mdash;
+    behavioural detection is offline.</strong> {{ ml.reason }}
+  <div class="small mt-2">
+    Detection is unaffected: YARA, Sigma and IOC matching keep running normally.
+    To enable behavioural hunting:
+    <span class="mono">pip install -r requirements-ml.txt</span> then
+    <span class="mono">python -m ml.training.train_anomaly --save</span>
   </div>
 </div>
 {% endif %}
 
-<!-- ------------------------------------------------------------------ models -->
-<div class="row g-3 mb-3">
-  <div class="col-lg-7">
-    <div class="card ator-card h-100">
-      <div class="card-header d-flex justify-content-between">
-        <span>Models</span>
-        <span class="mono small text-muted" title="feature contract hash">
-          spec {{ (ml.feature_spec_sha256 or '')[:12] }}…</span>
-      </div>
-      <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          <thead><tr><th>Component</th><th>Tier</th><th>Status</th><th>Trained</th><th>Quality</th></tr></thead>
-          <tbody>
-          {% for m in ml.models %}
-            <tr>
-              <td class="text-capitalize">{{ m.model_type }}</td>
-              <td><span class="badge bg-secondary">{{ m.tier|upper }}</span></td>
-              <td>
-                {% if not m.loadable %}
-                  <span class="badge bg-danger" title="{{ m.note }}">refused</span>
-                {% elif m.model_type == 'tactic' %}
-                  {# Component C was NOT deployed at Phase 5 (50.8% accuracy vs a 40.5%
-                     majority baseline). Phase 7a's label recovery moved it to 77.6% precision
-                     at p>=0.80 on well-supported classes, so it now ships - but only as a
-                     gated hint: confidence >= 0.50, probability >= 0.80, and only tactics
-                     with >= 30 training examples. #}
-                  <span class="badge bg-warning text-dark"
-                        title="Gated hint only: Component B confidence >= {{ ml.tactic_gate.min_confidence if ml.tactic_gate else '0.50' }},
-                               probability >= {{ ml.tactic_gate.min_probability if ml.tactic_gate else '0.80' }}, and only tactics with
-                               >= {{ ml.tactic_gate.min_support if ml.tactic_gate else '30' }} training examples.{% if ml.tactic_gate %}
-                               Measured {{ ml.tactic_gate.precision_pct }}% precision at that threshold,
-                               over {{ ml.tactic_gate.coverage_pct }}% of attacks.{% endif %}">
-                    gated hint</span>
-                {% else %}
-                  <span class="badge bg-success">active</span>
-                {% endif %}
-              </td>
-              <td class="mono small">{{ (m.trained_at_utc or '-')[:16] }}</td>
-              <td class="mono small">
-                {% if m.metrics and m.metrics.pr_auc %}PR-AUC {{ '%.3f'|format(m.metrics.pr_auc) }}
-                {% else %}&mdash;{% endif %}
-              </td>
-            </tr>
-          {% else %}
-            <tr><td colspan="5" class="text-muted p-3">
-              No trained models. Run <span class="mono">python -m ml.training.train_anomaly --save</span>
-            </td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      {% if ml.feature_counts %}
-      <div class="card-footer small text-muted">
-        {{ ml.feature_counts.total }} features &mdash;
-        {{ ml.feature_counts.t1 }} available on every host,
-        {{ ml.feature_counts.t2 }} needing Sysmon,
-        {{ ml.feature_counts.t3 }} needing PowerShell module logging.
-        Tier is chosen per host from the telemetry actually present.
-        A model trained against a different feature spec is refused rather than used.
-      </div>
-      {% endif %}
+<!-- ------------------------------------------------------------------ KPI strip -->
+<div class="kpi-strip mb-3 stagger">
+  <div class="card card-metric ator-card kpi-tile"><div class="card-body py-3">
+    <i class="bi bi-search kpi-ico"></i>
+    <div class="kpi-label">Open leads</div>
+    <div class="kpi-num">{{ kpis.leads }}</div>
+    <div class="kpi-sub">behavioural leads to review</div>
+  </div></div>
+  <div class="card card-metric ator-card kpi-tile"><div class="card-body py-3">
+    <i class="bi bi-shield-exclamation kpi-ico"></i>
+    <div class="kpi-label">Likely malicious</div>
+    <div class="kpi-num">{{ kpis.high }}</div>
+    <div class="kpi-sub">threat likelihood &ge; 50%</div>
+  </div></div>
+  <div class="card card-metric ator-card kpi-tile"><div class="card-body py-3">
+    <i class="bi bi-diagram-3 kpi-ico"></i>
+    <div class="kpi-label">ATT&amp;CK-mapped</div>
+    <div class="kpi-num">{{ kpis.with_tactic }}</div>
+    <div class="kpi-sub">with a likely tactic</div>
+  </div></div>
+  <div class="card card-metric ator-card kpi-tile"><div class="card-body py-3">
+    <i class="bi bi-pc-display kpi-ico"></i>
+    <div class="kpi-label">Hosts at risk</div>
+    <div class="kpi-num">{{ kpis.hosts_elevated }}</div>
+    <div class="kpi-sub">high or critical, of {{ kpis.hosts_scored }} scored</div>
+  </div></div>
+  <div class="card card-metric ator-card kpi-tile"><div class="card-body py-3">
+    <i class="bi bi-cpu kpi-ico"></i>
+    <div class="kpi-label">Engines online</div>
+    <div class="kpi-num">{{ kpis.engines_online }}<span class="unit">/ {{ kpis.engines_total }}</span></div>
+    <div class="kpi-sub">detection engines</div>
+  </div></div>
+  <div class="card card-metric ator-card kpi-tile"><div class="card-body py-3">
+    <i class="bi bi-heart-pulse kpi-ico"></i>
+    <div class="kpi-label">Data health</div>
+    <div class="kpi-num" style="font-size:1.25rem">
+      {% if drift.overall %}<span class="status-pill {{ drift.overall.css }}"><span class="dot"></span>{{ drift.overall.label }}</span>
+      {% else %}<span class="text-muted">&mdash;</span>{% endif %}
     </div>
+    <div class="kpi-sub">{% if drift.overall %}sensor &amp; model inputs{% else %}not checked yet{% endif %}</div>
+  </div></div>
+</div>
+
+<!-- ---------------------------------------------------------- how to read -->
+<details class="mb-3 small">
+  <summary class="text-muted"><i class="bi bi-info-circle me-1"></i>How to read this page</summary>
+  <dl class="how row mt-2 mb-0">
+    <dt class="col-sm-3">Priority P1&ndash;P4</dt>
+    <dd class="col-sm-9">Where to start. Follows threat likelihood: P1 strongly resembles known
+      attack activity, P4 is unusual but unlike known attacks. The detection's own severity
+      is shown in its evidence.</dd>
+    <dt class="col-sm-3">Threat likelihood</dt>
+    <dd class="col-sm-9">How closely the process resembles known attack activity, from a model
+      trained on real adversary-emulation data. The best single signal for what to look at first.</dd>
+    <dt class="col-sm-3">Rarity</dt>
+    <dd class="col-sm-9">How unusual the process is compared with normal activity on this estate.
+      Rare with a low threat likelihood usually means legitimate but uncommon software
+      (developer tools, vendor agents).</dd>
+    <dt class="col-sm-3">Likely ATT&amp;CK tactic</dt>
+    <dd class="col-sm-9">An advisory mapping, shown only when the model is confident and the lead
+      itself looks malicious. A rule-derived technique always takes precedence.</dd>
+    <dt class="col-sm-3">Why it was flagged</dt>
+    <dd class="col-sm-9">The behaviours that set the process apart. The bars show how far from
+      normal each one is; yes/no indicators show as <i>present</i>.</dd>
+  </dl>
+</details>
+
+<!-- ---------------------------------------------------------------- leads -->
+<div class="card ator-card mb-3" id="leadQueue">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span><i class="bi bi-crosshair me-1"></i>Behavioural leads
+      <span class="chip-count ms-1" id="leadCount">{{ queue.total }}</span></span>
+    <span class="small text-muted">click a lead for its evidence</span>
   </div>
 
-  <!-- ------------------------------------------------------------- host risk -->
+  {# Plain GET form: it works without JavaScript, every view has a shareable URL, and the
+     browser's back button moves between filter states. The script below upgrades it to
+     fetch just the results table. #}
+  <form class="lead-filters px-3 py-2 border-bottom" id="leadFilters" method="get" action="/ml">
+    <div class="row g-2 align-items-center">
+      <div class="col-12 col-lg-4">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input type="search" class="form-control" name="q" id="leadSearch"
+                 value="{{ queue.filters.q }}" autocomplete="off" spellcheck="false"
+                 placeholder="Search process, command line, path, account or host"
+                 aria-label="Search leads">
+        </div>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="host_id" aria-label="Host">
+          <option value="">All hosts</option>
+          {% for h in queue.options.hosts %}
+            <option value="{{ h.id }}" {{ 'selected' if queue.filters.host_id == h.id }}>{{ h.hostname }} ({{ h.leads }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="verdict" aria-label="Analyst verdict">
+          <option value="">Any verdict</option>
+          {% for value, label in queue.options.verdicts.items() %}
+            <option value="{{ value }}" {{ 'selected' if queue.filters.verdict == value }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="tactic" aria-label="ATT&amp;CK tactic">
+          <option value="">Any tactic</option>
+          <option value="any" {{ 'selected' if queue.filters.tactic == 'any' }}>With a tactic</option>
+          <option value="none" {{ 'selected' if queue.filters.tactic == 'none' }}>Without a tactic</option>
+          {% for t in queue.options.tactics %}
+            <option value="{{ t.value }}" {{ 'selected' if queue.filters.tactic == t.value }}>{{ t.name }} ({{ t.leads }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="sort" aria-label="Sort by">
+          {% for value, spec in queue.options.sorts.items() %}
+            <option value="{{ value }}" {{ 'selected' if queue.sort == value }}>{{ spec[0] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+      <span class="small text-muted">Priority</span>
+      {% for p in ['P1', 'P2', 'P3', 'P4'] %}
+        <input type="checkbox" class="btn-check" name="priority" value="{{ p }}" id="prio{{ p }}"
+               {{ 'checked' if p in queue.filters.priority }} autocomplete="off">
+        <label class="btn btn-sm btn-outline-secondary" for="prio{{ p }}">{{ p }}</label>
+      {% endfor %}
+      <span class="ms-auto d-flex align-items-center gap-2">
+        {# Always rendered: the filter bar is not part of the swapped region, so a button
+           that only existed when filters were active could never appear after one. #}
+        <button type="button" class="btn btn-sm btn-link text-decoration-none p-0"
+                data-lead-clear {{ 'hidden' if not queue.filters_active }}>
+          <i class="bi bi-x-circle me-1"></i>Clear filters</button>
+        <select class="form-select form-select-sm w-auto" name="per_page" aria-label="Leads per page">
+          {% for n in queue.options.per_page %}
+            <option value="{{ n }}" {{ 'selected' if queue.per_page == n }}>{{ n }} / page</option>
+          {% endfor %}
+        </select>
+        <noscript><button class="btn btn-sm btn-primary" type="submit">Apply</button></noscript>
+      </span>
+    </div>
+  </form>
+
+  <div id="leadResults" aria-live="polite">
+{% include "ml_leads.html" %}
+  </div>
+  <div class="card-footer small text-muted">
+    These are statistical findings, not rule matches &mdash; verify before acting.
+    A process that stays suspicious across sweeps is kept as <b>one</b> lead with a sighting count, not re-alerted.
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <!-- -------------------------------------------------------------- hosts at risk -->
   <div class="col-lg-5">
     <div class="card ator-card h-100">
-      <div class="card-header">Host risk</div>
+      <div class="card-header"><i class="bi bi-pc-display me-1"></i>Hosts at risk</div>
       <div class="card-body p-0">
-        <table class="table table-sm mb-0">
-          <thead><tr><th>Host</th><th>Score</th><th>Tier</th><th>Drivers</th></tr></thead>
+        <table class="table table-sm mb-0 align-middle">
+          <thead><tr><th>Host</th><th>Risk</th><th>Level</th><th>Driven by</th></tr></thead>
           <tbody>
           {% for h in risk %}
             <tr>
-              <td>{{ h.hostname or ('host ' ~ h.host_id) }}</td>
+              <td class="small">{{ h.hostname or ('host ' ~ h.host_id) }}</td>
               <td class="mono">{{ '%.1f'|format(h.score) }}</td>
-              <td><span class="badge badge-{{ h.tier }}">{{ h.tier }}</span></td>
-              <td class="small text-muted">
-                {{ h.breakdown.get('distinct_tactics', [])|length }} tactic(s),
-                {{ h.breakdown.get('detections_considered', 0) }} finding(s)
+              <td><span class="risk-tag risk-{{ h.tier }}">{{ h.tier|capitalize }}</span></td>
+              <td class="small text-muted"
+                  title="{{ h.tactic_names|join(', ') if h.tactic_names else 'no ATT&CK tactic observed' }}">
+                {{ h.tactic_names|length }} ATT&amp;CK tactic{{ '' if h.tactic_names|length == 1 else 's' }}
+                &middot; {{ h.breakdown.get('detections_considered', 0) }} detection{{ '' if h.breakdown.get('detections_considered', 0) == 1 else 's' }}
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="4" class="text-muted p-3">Not computed yet.</td></tr>
+            <tr><td colspan="4" class="p-0"><div class="empty-hint">Not computed yet &mdash; press <b>Refresh host risk</b>.</div></td></tr>
           {% endfor %}
           </tbody>
         </table>
       </div>
       <div class="card-footer small text-muted">
-        Deterministic: severity &times; recency decay + tactic diversity + capped ML contribution.
+        Severity of each detection weighted by how recent it is, plus the breadth of ATT&amp;CK
+        tactics seen, plus a capped share from behavioural leads. Deterministic: every point traces
+        to a detection.
+      </div>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------ detection engines -->
+  <div class="col-lg-7">
+    <div class="card ator-card h-100">
+      <div class="card-header"><i class="bi bi-cpu me-1"></i>Detection engines</div>
+      <div class="card-body py-1">
+        {% for e in engines %}
+          <div class="engine d-flex gap-3 py-2">
+            <i class="bi {{ e.icon }} engine-ico"></i>
+            <div class="flex-grow-1">
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="fw-semibold">{{ e.title }}</span>
+                <span class="status-pill {{ e.status_css }}"><span class="dot"></span>{{ e.status }}</span>
+              </div>
+              <div class="small text-muted">{{ e.what }}</div>
+              {% if e.results %}
+                <ul class="results mb-0 ps-3 mt-1">
+                  {% for r in e.results %}<li>{{ r }}</li>{% endfor %}
+                </ul>
+              {% endif %}
+              <div class="text-muted" style="font-size:.7rem">
+                Telemetry: {{ e.telemetry }}{% if e.trained %} &middot; trained {{ e.trained }}{% endif %}
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="card-footer small text-muted">
+        Lab results come from testing on 205 labelled attacks from real adversary-emulation
+        recordings (OTRF). Results on your estate will differ &mdash; treat outputs as leads.
       </div>
     </div>
   </div>
 </div>
 
-<!-- --------------------------------------------------------------- anomalies -->
-<div class="card ator-card mb-3">
-  <div class="card-header d-flex justify-content-between align-items-center">
-    <span>Anomaly triage queue</span>
-    <span class="small text-muted">
-      ranked by how unusual the process is &mdash; a queue to review, not an alarm
-    </span>
+<!-- ---------------------------------------------------------------- model updates -->
+{% if ops and ops.available %}
+<div class="card ator-card mb-3" id="modelOps">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span><i class="bi bi-arrow-repeat me-1"></i>Detection model updates
+      <span class="text-muted small">&middot; weekly and automatic, never unverified</span></span>
+    <span class="status-pill {{ ops.state.css }}" title="{{ ops.state.detail }}"><span class="dot"></span>{{ ops.state.label }}</span>
   </div>
-  <div class="card-body p-0">
-    <table class="table table-sm table-hover mb-0">
-      <thead><tr>
-        <th>Host</th><th>Process</th><th>Anomaly</th><th>Confidence</th>
-        <th>Sev</th><th>ML suggests</th><th>Why it was flagged</th><th class="mono">Time</th>
-      </tr></thead>
-      <tbody>
-      {% for a in anomalies %}
-        <tr>
-          <td class="small">{{ a.hostname or a.host_id }}</td>
-          <td class="mono small">{{ a.rule_name|replace('ML Anomaly: ', '') }}</td>
-          <td>
-            <span class="badge bg-info text-dark mono">
-              {{ '%.3f'|format(a.anomaly_score or 0) }}</span>
-          </td>
-          <td>
-            {% if a.confidence_score is not none %}
-              <span class="badge badge-{{ a.confidence_band }} mono">
-                {{ '%.2f'|format(a.confidence_score) }}</span>
-            {% else %}<span class="text-muted small">unscored</span>{% endif %}
-          </td>
-          <td><span class="badge badge-{{ a.severity }}">{{ a.severity }}</span></td>
-          <td class="small">
-            {% if a.suggested_tactics and a.suggested_tactics.suggestions %}
-              {% for t in a.suggested_tactics.suggestions %}
-                <span class="badge bg-secondary"
-                      title="ML hint, not an authoritative ATT&CK mapping{% if ml.tactic_gate %} - measured {{ ml.tactic_gate.precision_pct }}% precision at this threshold{% endif %}">
-                  {{ t.tactic }} {{ '%.0f'|format(t.probability * 100) }}%</span>
-              {% endfor %}
-            {% else %}<span class="text-muted">&mdash;</span>{% endif %}
-          </td>
-          <td class="small text-muted">
-            {% if a.ml_explanation and a.ml_explanation.top_features %}
-              {% for f in a.ml_explanation.top_features[:3] %}
-                <span class="badge bg-light text-dark border mono"
-                      title="deviation from baseline, in robust units">
-                  {{ f.feature }} &times;{{ f.deviation }}</span>
-              {% endfor %}
-            {% else %}&mdash;{% endif %}
-          </td>
-          <td class="mono small">{{ (a.detected_at_utc or '')[:19] }}</td>
-        </tr>
-      {% else %}
-        <tr><td colspan="8" class="text-muted p-3">
-          No ML findings yet. Press <b>Score now</b>, or run the engine.
-        </td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-lg-4 ops-fact">
+        <div class="label mb-1">In service</div>
+        {% for key, m in ops.served.items() %}
+          <div class="small"><b>{{ m.engine }}</b>
+            <div class="text-muted mono" style="font-size:.7rem">{{ m.version_id }} &middot; trained {{ (m.trained_at_utc or '')[:10] }}</div></div>
+        {% else %}<div class="small text-muted">No model in service.</div>{% endfor %}
+      </div>
+      <div class="col-lg-4 ops-fact">
+        <div class="label mb-1">On live trial</div>
+        {% for t in ops.trials %}
+          <div class="small mb-2"><b>{{ t.engine }}</b> <span class="text-muted mono" style="font-size:.7rem">{{ t.version_id }}</span>
+          {% if t.evidence %}
+            <div class="ops-bar my-1" title="evidence collected before a decision can be made"><span style="width: {{ t.progress_pct }}%"></span></div>
+            <div class="text-muted" style="font-size:.74rem">
+              {{ t.evidence.active_hours }}/{{ t.needs.hours }} h of traffic &middot;
+              {{ t.evidence.processes_scored }}/{{ t.needs.processes }} processes compared &middot;
+              would have raised <b>{{ t.evidence.challenger_flagged }}</b> lead{{ '' if t.evidence.challenger_flagged == 1 else 's' }}
+              vs <b>{{ t.evidence.champion_flagged }}</b> from the model in service
+              {% if t.evidence.errors %}&middot; <span class="text-danger">{{ t.evidence.errors }} error(s)</span>{% endif %}
+              {% if t.extensions %}&middot; extended {{ t.extensions }} week{{ '' if t.extensions == 1 else 's' }}{% endif %}
+            </div>
+          {% else %}
+            <div class="text-muted" style="font-size:.74rem">checked against this week's findings at the next weekly run</div>
+          {% endif %}
+          </div>
+        {% else %}<div class="small text-muted">None &mdash; no candidate is waiting.</div>{% endfor %}
+        <div class="text-muted" style="font-size:.72rem">A candidate scores the same traffic silently. Analysts only ever see the model in service.</div>
+      </div>
+      <div class="col-lg-4 ops-fact">
+        <div class="label mb-1">Weekly run</div>
+        {% if ops.last_run %}
+          <div class="small">Last: <b>{{ {'succeeded': 'completed', 'attention': 'completed, needs a look', 'failed': 'failed - nothing changed', 'running': 'running now'}.get(ops.last_run.status, ops.last_run.status) }}</b>
+            <span class="mono text-muted" style="font-size:.7rem">{{ (ops.last_run.started_at_utc or '')[:16]|replace('T',' ') }}</span></div>
+        {% else %}<div class="small text-muted">Has not run on this server yet.</div>{% endif %}
+        {% if ops.next_due_utc %}<div class="small">Next due: <span class="mono">{{ ops.next_due_utc|replace('T',' ') }}</span> UTC</div>{% endif %}
+        {% for d in ops.decisions[:3] %}
+          <div class="small">{{ {'promoted': 'Deployed', 'rejected': 'Rejected', 'aborted': 'Rolled back'}.get(d.status, d.status) }}:
+            {{ d.engine }} <span class="text-muted mono" style="font-size:.7rem">{{ d.version_id }}</span></div>
+        {% endfor %}
+        <div class="small text-muted mt-1">Analyst verdicts so far: {{ ops.feedback.confirmed }} confirmed, {{ ops.feedback.benign }} dismissed.</div>
+      </div>
+    </div>
+    {% if ops.attention %}
+      <div class="alert alert-warning small mt-3 mb-0 py-2">
+        <b><i class="bi bi-exclamation-triangle me-1"></i>Needs a look:</b>
+        <ul class="mb-0 ps-3">{% for item in ops.attention %}<li>{{ item }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
   </div>
   <div class="card-footer small text-muted">
-    <b>Anomaly</b> = percentile against this estate's benign baseline (1.000 = most unusual seen).
-    <b>Confidence</b> = calibrated P(malicious) from the supervised model.
-    A high anomaly with a low confidence usually means unusual-but-legitimate software.
-    <b>ML suggests</b> is a tactic <i>hint</i>{% if ml.tactic_gate %}
-    (measured <b>{{ ml.tactic_gate.precision_pct }}% precision</b> at this gate, covering
-    {{ ml.tactic_gate.coverage_pct }}% of attacks){% endif %}, shown only when confidence
-    &ge; {{ ml.tactic_gate.min_confidence if ml.tactic_gate else 0.50 }} and only for tactics
-    with enough training support &mdash; the tactic model is trained on attacks alone, so
-    asking it about a benign process is out of distribution.
-    These are statistical findings, not rule matches &mdash; verify before acting.
+    A new model replaces the one in service only after it beats the detection rules and the
+    current model in lab tests <b>and</b> a week of silent side-by-side scoring on your own
+    traffic. Every deployment is checked immediately and rolled back automatically if it fails.
+    Operators: <span class="mono">python -m ml.mlops status</span>.
   </div>
 </div>
+{% endif %}
 
-<!-- ------------------------------------------------------------------- drift -->
-<div class="card ator-card">
-  <div class="card-header d-flex justify-content-between">
-    <span>Feature drift (PSI)</span>
-    {% if drift.retrain_recommended %}
-      <span class="badge bg-warning text-dark">{{ drift.shifted_features }} feature(s) shifted</span>
-    {% else %}
-      <span class="badge bg-success">stable</span>
+<!-- ------------------------------------------------------------------- data health -->
+<div class="card ator-card mb-3">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span><i class="bi bi-heart-pulse me-1"></i>Data health
+      <span class="text-muted small">&middot; is the ML still seeing the kind of data it was trained on?</span></span>
+    {% if drift.overall %}
+      <span class="status-pill {{ drift.overall.css }}"><span class="dot"></span>{{ drift.overall.label }}
+        {% if drift.shifted_features %}&middot; {{ drift.shifted_features }} signal{{ '' if drift.shifted_features == 1 else 's' }} degraded{% endif %}</span>
     {% endif %}
   </div>
   <div class="card-body p-0">
-    <table class="table table-sm mb-0">
-      <thead><tr><th>Feature</th><th>PSI</th><th>Verdict</th><th class="mono">Computed</th></tr></thead>
+    <table class="table table-sm mb-0 align-middle">
+      <thead><tr><th>Signal</th><th>Status</th><th title="Population Stability Index">Drift</th><th class="mono">Checked</th></tr></thead>
       <tbody>
       {% for d in drift.entries[:12] %}
         <tr>
-          <td class="mono small">{{ d.feature_name }}</td>
-          <td class="mono">{{ '%.3f'|format(d.psi) }}</td>
-          <td>
-            <span class="badge {{ 'bg-danger' if d.verdict=='shifted' else 'bg-warning text-dark' }}">
-              {{ d.verdict }}</span>
-          </td>
-          <td class="mono small">{{ (d.computed_at_utc or '')[:16] }}</td>
+          <td class="small">{{ d.label }} <span class="text-muted mono" style="font-size:.68rem">{{ d.feature_name }}</span></td>
+          <td><span class="status-pill {{ d.health.css }}"><span class="dot"></span>{{ d.health.label }}</span></td>
+          <td class="mono small">{{ '%.2f'|format(d.psi) }}</td>
+          <td class="mono small">{{ (d.computed_at_utc or '')[:16]|replace('T',' ') }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="4" class="text-muted p-3">
-          No drift measured yet. Run
-          <span class="mono">python scripts/retrain_ml.py --check-drift</span>
-        </td></tr>
+        <tr><td colspan="4" class="p-0"><div class="empty-hint">
+          Not checked yet. The weekly model update checks it; to check now run
+          <span class="mono">python scripts/retrain_ml.py --check-drift</span></div></td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
   <div class="card-footer small text-muted">
-    PSI compares the distribution the models were trained on with what they are being served.
-    &lt;0.10 stable &middot; 0.10&ndash;0.25 moderate &middot; &gt;0.25 shifted (retrain).
-    A jump in missingness usually means a collector broke.
+    <b>Degraded</b> usually means a sensor stopped reporting something the models rely on &mdash;
+    for example an agent that is not running elevated cannot read command lines &mdash; or the
+    environment has changed. Fix the collector first; retrain if the change is real.
   </div>
 </div>
 
+<!-- -------------------------------------------------------------- technical view -->
+<details class="mb-4">
+  <summary class="small text-muted"><i class="bi bi-gear me-1"></i>Technical details (for data scientists)</summary>
+  <div class="card ator-card mt-2">
+    <div class="card-header d-flex justify-content-between">
+      <span>Models</span>
+      <span class="mono small text-muted" title="feature contract hash">spec {{ (ml.feature_spec_sha256 or '')[:12] }}&hellip;</span>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead><tr><th>Component</th><th>Tier</th><th>Loadable</th><th>Trained</th><th>PR-AUC</th>
+                   <th>Precision@25</th><th>Recall @1% FPR</th></tr></thead>
+        <tbody>
+        {% for m in ml.models %}
+          <tr>
+            <td class="text-capitalize">{{ m.model_type }}</td>
+            <td><span class="badge bg-secondary">{{ m.tier|upper }}</span></td>
+            <td>{{ 'yes' if m.loadable else 'refused' }}</td>
+            <td class="mono small">{{ (m.trained_at_utc or '-')[:16] }}</td>
+            <td class="mono small">{% if m.metrics and m.metrics.pr_auc %}{{ '%.3f'|format(m.metrics.pr_auc) }}{% else %}&mdash;{% endif %}</td>
+            <td class="mono small">{% if m.metrics and m.metrics.precision_at_25 is not none and m.metrics.precision_at_25 is defined %}{{ '%.2f'|format(m.metrics.precision_at_25) }}{% else %}&mdash;{% endif %}</td>
+            <td class="mono small">{% if m.metrics and m.metrics['recall_at_fpr_0.01'] is defined %}{{ '%.3f'|format(m.metrics['recall_at_fpr_0.01']) }}{% else %}&mdash;{% endif %}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="text-muted p-3">No trained models. Run
+            <span class="mono">python -m ml.training.train_anomaly --save</span></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-footer small text-muted">
+      {% if ml.feature_counts %}{{ ml.feature_counts.total }} features ({{ ml.feature_counts.t1 }} T1 psutil,
+      {{ ml.feature_counts.t2 }} T2 Sysmon, {{ ml.feature_counts.t3 }} T3 PowerShell). {% endif %}
+      T1 is served by default; T2 is opt-in (<span class="mono">ATOR_ML_TIER=t2</span>) and only on hosts with Sysmon.
+      {% if ml.tactic_gate %}Tactic hints are gated at p &ge; {{ ml.tactic_gate.min_probability }},
+      &ge; {{ ml.tactic_gate.min_support }} training examples and triage confidence &ge; {{ ml.tactic_gate.min_confidence }}
+      &mdash; measured {{ ml.tactic_gate.precision_pct }}% precision, {{ ml.tactic_gate.coverage_pct }}% coverage.{% endif %}
+      A model trained against a different feature spec is refused rather than used.
+      Full evaluation: <span class="mono">reports_ml/</span>.
+    </div>
+  </div>
+</details>
+
 <script>
 (function () {
-  function busy(btn, on, label) {
+  const toast = (msg, type) => (window.ATOR && window.ATOR.toast) ? window.ATOR.toast(msg, type) : alert(msg);
+  function busy(btn, on, html) {
     btn.disabled = on;
-    btn.textContent = on ? 'Working…' : label;
+    btn.innerHTML = on ? '<span class="spinner-border spinner-border-sm me-1"></span>Working&hellip;' : html;
   }
   const scoreBtn = document.getElementById('mlScoreBtn');
-  if (scoreBtn) scoreBtn.addEventListener('click', async () => {
-    busy(scoreBtn, true, 'Score now');
-    try {
-      const r = await fetch('/api/v1/ml/score', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({persist: true})
-      });
-      const body = await r.json();
-      if (!r.ok) { alert('ML unavailable: ' + (body.detail?.reason || r.status)); }
-      else { location.reload(); }
-    } catch (e) { alert('Request failed: ' + e); }
-    finally { busy(scoreBtn, false, 'Score now'); }
+  if (scoreBtn) {
+    const label = scoreBtn.innerHTML;
+    scoreBtn.addEventListener('click', async () => {
+      busy(scoreBtn, true, label);
+      try {
+        const r = await fetch('/api/v1/ml/score', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({persist: true})
+        });
+        const body = await r.json();
+        if (!r.ok) { toast('Behavioural detection unavailable: ' + (body.detail?.reason || r.status), 'error'); return; }
+        const found = body.detections_found || 0, again = body.detections_recurring || 0;
+        toast(found ? `${found} new lead${found === 1 ? '' : 's'} found` +
+                      (again ? `, ${again} still active` : '')
+                    : (again ? `No new leads - ${again} existing lead${again === 1 ? '' : 's'} still active`
+                             : 'Hunt complete - no new leads'), found ? 'warning' : 'success');
+        setTimeout(() => location.reload(), 900);
+      } catch (e) { toast('Request failed: ' + e, 'error'); }
+      finally { busy(scoreBtn, false, label); }
+    });
+  }
+  // Delegated: the rows are replaced whenever a filter changes, so per-element listeners
+  // would stop working after the first search.
+  document.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('.verdict-btn');
+    if (btn) {
+      ev.stopPropagation();
+      const box = btn.closest('.verdict-box');
+      const verdict = btn.dataset.verdict;
+      box.querySelectorAll('button').forEach(b => b.disabled = true);
+      try {
+        const r = await fetch('/api/v1/ml/feedback', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({detection_id: Number(box.dataset.detection), verdict})
+        });
+        if (!r.ok) { toast('Verdict not saved (' + r.status + ')', 'error'); return; }
+        toast(verdict === 'clear' ? 'Verdict cleared'
+              : verdict === 'confirmed' ? 'Marked as a confirmed threat'
+              : "Marked as benign - it will inform next week's model", 'success');
+        setTimeout(() => location.reload(), 600);
+      } catch (e) { toast('Request failed: ' + e, 'error'); }
+      finally { box.querySelectorAll('button').forEach(b => b.disabled = false); }
+    }
   });
+  // ---- lead queue: filter, sort and page without reloading the dashboard.
+  //
+  // The form works on its own (plain GET). This only swaps the results table in, keeps the
+  // URL in step so a view stays shareable and the back button works, and cancels a request
+  // that a newer keystroke has already superseded.
+  const form = document.getElementById('leadFilters');
+  const results = document.getElementById('leadResults');
+  if (form && results && window.fetch && window.history && window.AbortController) {
+    let inFlight = null;
+
+    const queryString = (extra) => {
+      const params = new URLSearchParams(new FormData(form));
+      for (const [k, v] of Object.entries(extra || {})) {
+        params.delete(k);
+        if (v !== null && v !== undefined) params.set(k, v);
+      }
+      for (const [k, v] of [...params.entries()]) if (v === '') params.delete(k);
+      if (params.get('page') === '1') params.delete('page');
+      return params.toString();
+    };
+
+    const load = async (extra, push) => {
+      const qs = queryString(extra);
+      if (inFlight) inFlight.abort();            // a newer filter wins over an older one
+      inFlight = new AbortController();
+      results.dataset.loading = '1';
+      try {
+        const r = await fetch('/ml?' + (qs ? qs + '&' : '') + 'partial=1',
+                              {signal: inFlight.signal, headers: {'X-Requested-With': 'fetch'}});
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        results.innerHTML = await r.text();
+        const url = qs ? '/ml?' + qs : '/ml';
+        push ? history.pushState({qs}, '', url) : history.replaceState({qs}, '', url);
+        const count = results.querySelector('[data-total]');
+        const chip = document.getElementById('leadCount');
+        if (chip && count) chip.textContent = count.dataset.total;
+        syncClear();
+      } catch (e) {
+        if (e.name !== 'AbortError') toast('Could not load leads: ' + e.message, 'error');
+      } finally {
+        if (inFlight && !inFlight.signal.aborted) { inFlight = null; }
+        results.dataset.loading = '0';
+      }
+    };
+
+    const syncClear = () => {
+      const p = new URLSearchParams(queryString({}));
+      const active = ['q', 'priority', 'host_id', 'verdict', 'tactic'].some(k => p.has(k));
+      form.querySelectorAll('[data-lead-clear]').forEach(b => { b.hidden = !active; });
+    };
+
+    let typing;
+    form.addEventListener('input', (ev) => {
+      if (ev.target.type === 'search' || ev.target.type === 'text') {
+        clearTimeout(typing);                    // one request per pause, not per keystroke
+        typing = setTimeout(() => load({page: 1}, false), 300);
+      }
+    });
+    form.addEventListener('change', (ev) => {
+      if (ev.target.type === 'search' || ev.target.type === 'text') return;
+      clearTimeout(typing);
+      load({page: 1}, true);
+    });
+    form.addEventListener('submit', (ev) => { ev.preventDefault(); load({page: 1}, true); });
+
+    document.addEventListener('click', (ev) => {
+      const pager = ev.target.closest('[data-lead-page]');
+      if (pager && results.contains(pager)) {
+        ev.preventDefault();
+        if (pager.closest('.page-item').classList.contains('disabled')) return;
+        load({page: pager.dataset.leadPage}, true);
+        document.getElementById('leadQueue').scrollIntoView({behavior: 'smooth', block: 'start'});
+        return;
+      }
+      if (ev.target.closest('[data-lead-clear]')) {
+        ev.preventDefault();
+        form.reset();
+        form.querySelectorAll('input[name="priority"]').forEach(c => c.checked = false);
+        form.querySelector('[name="q"]').value = '';
+        form.querySelectorAll('select').forEach(sel => {
+          if (sel.name !== 'per_page' && sel.name !== 'sort') sel.selectedIndex = 0;
+        });
+        load({page: 1}, true);
+      }
+    });
+
+    window.addEventListener('popstate', () => {
+      // Re-sync the controls from the URL, then render that view.
+      const params = new URLSearchParams(location.search);
+      form.querySelector('[name="q"]').value = params.get('q') || '';
+      const priorities = params.getAll('priority');
+      form.querySelectorAll('input[name="priority"]').forEach(c => { c.checked = priorities.includes(c.value); });
+      form.querySelectorAll('select').forEach(sel => {
+        const v = params.get(sel.name);
+        sel.value = v === null ? sel.options[0].value : v;
+      });
+      load({page: params.get('page') || 1}, false);
+    });
+  }
 
   const riskBtn = document.getElementById('mlRiskBtn');
-  if (riskBtn) riskBtn.addEventListener('click', async () => {
-    busy(riskBtn, true, 'Recompute risk');
-    try {
-      await fetch('/api/v1/ml/host-risk/recompute', {method: 'POST'});
-      location.reload();
-    } catch (e) { alert('Request failed: ' + e); }
-    finally { busy(riskBtn, false, 'Recompute risk'); }
-  });
+  if (riskBtn) {
+    const label = riskBtn.innerHTML;
+    riskBtn.addEventListener('click', async () => {
+      busy(riskBtn, true, label);
+      try {
+        await fetch('/api/v1/ml/host-risk/recompute', {method: 'POST'});
+        toast('Host risk refreshed', 'success');
+        setTimeout(() => location.reload(), 700);
+      } catch (e) { toast('Request failed: ' + e, 'error'); }
+      finally { busy(riskBtn, false, label); }
+    });
+  }
 })();
 </script>
 {% endblock %}

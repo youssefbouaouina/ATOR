@@ -1,0 +1,25 @@
+# Weekly ATOR ML update (docs/ML_MLOPS_PLAN.md). Started by ator-mlops.timer.
+#
+#   sudo cp scripts/ator-mlops.service scripts/ator-mlops.timer /etc/systemd/system/
+#   # edit WorkingDirectory/ExecStart/User below if the repo is not at /opt/ator
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ator-mlops.timer
+#   systemctl list-timers ator-mlops.timer        # next run
+#   journalctl -u ator-mlops.service              # last runs
+#
+# Exit codes: 0 ok, 1 failed (models unchanged), 2 completed but needs a look. 2 is not a
+# failure, so it is listed in SuccessExitStatus to keep the unit from being marked failed.
+[Unit]
+Description=ATOR ML weekly update (retrain, evaluate, shadow trial, deploy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ator
+WorkingDirectory=/opt/ator
+ExecStart=/opt/ator/.venv/bin/python -m ml.mlops run --trigger schedule
+SuccessExitStatus=2
+TimeoutStartSec=4h
+# Training is a background job: never compete with the DFIR server for CPU or disk.
+Nice=10
+IOSchedulingClass=idle

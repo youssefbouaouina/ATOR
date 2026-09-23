@@ -25,7 +25,8 @@ from ml.evaluation import harness as H
 from server.engine import ml_features as mlf, ml_triage
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
+# Same override the serving registry honours (server/engine/ml_registry.py).
+MODELS_DIR = os.environ.get("ATOR_ML_MODEL_DIR", os.path.join(_PROJECT_ROOT, "models"))
 REPORTS_DIR = os.path.join(_PROJECT_ROOT, "reports_ml")
 
 
@@ -164,10 +165,12 @@ def fit_final(dataset: A.Dataset, tier: str):
     return model, stats
 
 
-def save(model, stats, tier: str, metrics: dict, calibration: dict) -> str:
+def save(model, stats, tier: str, metrics: dict, calibration: dict,
+         models_dir: str | None = None) -> str:
     import joblib
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    path = os.path.join(MODELS_DIR, f"triage_{tier}.joblib")
+    models_dir = models_dir or MODELS_DIR
+    os.makedirs(models_dir, exist_ok=True)
+    path = os.path.join(models_dir, f"triage_{tier}.joblib")
     joblib.dump({
         "kind": "triage",
         "tier": tier,
@@ -186,6 +189,9 @@ def main() -> int:
     ap.add_argument("--train-db", default=DEFAULT_TRAIN_DB)
     ap.add_argument("--live-db", default=A.DEFAULT_LIVE_DB)
     ap.add_argument("--splits", type=int, default=5)
+    ap.add_argument("--models-dir", default=None,
+                    help="where --save writes (default: the served models/ directory). "
+                         "The MLOps pipeline points this at a candidate directory.")
     ap.add_argument("--save", action="store_true")
     ap.add_argument("--report", default=os.path.join(REPORTS_DIR, "triage_eval.json"))
     args = ap.parse_args()
@@ -204,7 +210,7 @@ def main() -> int:
     if args.save:
         for tier in (mlf.TIER_T1, mlf.TIER_T2):
             model, stats = fit_final(dataset, tier)
-            print(f"saved: {save(model, stats, tier, report['results'][f'triage_gbdt_{tier}']['metrics'], report['calibration'].get(tier, {}))}")
+            print(f"saved: {save(model, stats, tier, report['results'][f'triage_gbdt_{tier}']['metrics'], report['calibration'].get(tier, {}), models_dir=args.models_dir)}")
     return 0
 
 

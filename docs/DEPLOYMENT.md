@@ -19,6 +19,36 @@ never `127.0.0.1`:
 New-NetFirewallRule -DisplayName "ATOR Server" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
 ```
 
+Prefer limiting that rule to the endpoint subnet. The dashboard and the enrollment-approval
+API have no login, so anything that can reach port 8000 can approve an enrollment. A
+server on a laptop would otherwise also be open on its home or office Wi-Fi:
+
+```powershell
+New-NetFirewallRule -DisplayName "ATOR Server (lab subnet)" -Direction Inbound -Protocol TCP -LocalPort 8000 -RemoteAddress 192.168.50.0/24 -Action Allow
+```
+
+### The address in generated enrollment commands
+
+The enrollment status page (`/enroll/status/<token>`) builds a copy-paste bootstrap command
+that embeds the server's URL. That URL is chosen in this order (`server/ui.py`,
+`enrollment_server_url`):
+
+1. **`ATOR_PUBLIC_URL`**, if set, is used as-is. Use it for a DNS name, a reverse proxy or NAT.
+2. **The address the page was opened with**, unless it is loopback. Whoever is viewing the
+   page already reached the server there.
+3. **This server's address on `ATOR_ENROLL_SUBNET`** (comma-separated CIDRs, default
+   `192.168.50.0/24`). This covers viewing the page on the server itself via `localhost`.
+4. The default-route interface, as a last resort.
+
+A multi-homed host is why step 3 exists. A laptop running the server with Wi-Fi plus
+several VMware adapters would otherwise advertise its Wi-Fi address, which lab VMs on
+VMnet2 cannot reach:
+
+```powershell
+$env:ATOR_ENROLL_SUBNET = "192.168.50.0/24"      # the default; set it for other networks
+python -m server.app
+```
+
 Production notes:
 - Bind to `0.0.0.0:8000` only behind TLS (reverse proxy such as Caddy/Nginx).
 - Set `ATOR_DFIR_DB=/var/lib/ator/ator.db` to control DB location.
@@ -169,7 +199,8 @@ and place it where the agent looks, in priority order:
 
 1. `velociraptor_path` in `agent/config.json` (absolute path)
 2. the `ATOR_VELOCIRAPTOR` environment variable
-3. a `tools/` directory beside the agent install (`C:tor-agent	oolselociraptor.exe`)
+3. a `tools/` directory beside the agent install (`C:\ator-agent\tools\velociraptor.exe`)
+elociraptor.exe`)
 4. anywhere on `PATH`
 
 **The agent must run elevated on Windows.** The binary's manifest requests
@@ -183,6 +214,21 @@ before queueing a sweep. Endpoints without the binary are unaffected — every
 other part of the agent works exactly as before.
 
 Full design, the artifact allow-list and its limits: docs/VELOCIRAPTOR.md.
+
+## Weekly ML model updates (server)
+
+The ML models retrain, evaluate, trial and deploy themselves once a week. That is optional:
+without the schedule, the models in `models/` keep serving unchanged. To install it on the
+server (Windows, current user, no admin):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_mlops_schedule.ps1
+```
+
+On Linux, use `scripts/ator-mlops.service` and `scripts/ator-mlops.timer`. Restart the server
+once after updating, so the live trials can collect evidence. New models reach analysts only
+after offline gates and a week of silent side-by-side scoring. Operation, reading the results
+and every command: `docs/ML_MLOPS_RUNBOOK.md`. Design: `docs/ML_MLOPS_PLAN.md`.
 
 ## Atomic Red Team validation
 

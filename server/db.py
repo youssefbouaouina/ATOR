@@ -393,6 +393,15 @@ MIGRATIONS = {
         ("first_seen_utc", "TEXT"),
         ("last_seen_utc", "TEXT"),
         ("observation_count", "INTEGER NOT NULL DEFAULT 1"),
+        # Part of the v2 process identity (see DEDUPE_INDEXES), so it has to
+        # exist before the dedupe indexes are built. The ML overlay also adds
+        # it, but migrate() runs after the indexes; declaring it here keeps a
+        # fresh store from failing to build ux_raw_processes_dedupe_v2.
+        ("create_time_utc", "TEXT"),
+    ),
+    "raw_logs": (
+        # sha256 of the canonical event payload - part of the v2 log identity.
+        ("payload_sha256", "TEXT"),
     ),
     "raw_connections": (
         ("remote_domain", "TEXT"),
@@ -414,14 +423,34 @@ MIGRATIONS = {
 
 # Natural-key uniqueness so repeated agent observations update one row instead
 # of inserting a new one every collection cycle.
+#
+# The logs and processes keys are v2. Their v1 keys were too coarse and merged
+# records that are genuinely different (reproduced through the real ingest
+# endpoint; see tests/test_dedupe_identity.py):
+#
+#   raw_logs v1       (host, source, second, event_id, provider). The agent
+#                     records event times to the SECOND, so distinct events in
+#                     the same second collapsed into one: `whoami`, `net user`
+#                     and `ipconfig` launched together were stored as a single
+#                     process-creation event. v2 adds a hash of the payload.
+#                     Re-sent copies of an event are byte-identical, so they are
+#                     still dropped exactly as before.
+#   raw_processes v1  (host, pid, name, cmdline, exe, sha256). A NEW process
+#                     that reused a PID with an identical command line was
+#                     folded into the old row and kept the OLD instance's parent
+#                     and start time. v2 adds create_time_utc: (pid, start time)
+#                     is how an operating system itself identifies a process.
+#                     For agents that do not report a start time the column is
+#                     NULL, and v2 then behaves exactly like v1.
 DEDUPE_INDEXES = (
-    ("ux_raw_logs_dedupe",
-     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_logs_dedupe ON raw_logs"
-     "(host_id, source, COALESCE(event_time_utc,''), COALESCE(event_id,-1), COALESCE(provider,''))"),
-    ("ux_raw_processes_dedupe",
-     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_processes_dedupe ON raw_processes"
+    ("ux_raw_logs_dedupe_v2",
+     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_logs_dedupe_v2 ON raw_logs"
+     "(host_id, source, COALESCE(event_time_utc,''), COALESCE(event_id,-1), COALESCE(provider,''),"
+     " COALESCE(payload_sha256,''))"),
+    ("ux_raw_processes_dedupe_v2",
+     "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_processes_dedupe_v2 ON raw_processes"
      "(host_id, COALESCE(pid,-1), COALESCE(name,''), COALESCE(cmdline,''),"
-     " COALESCE(exe_path,''), COALESCE(sha256,''))"),
+     " COALESCE(exe_path,''), COALESCE(sha256,''), COALESCE(create_time_utc,''))"),
     ("ux_raw_connections_dedupe",
      "CREATE UNIQUE INDEX IF NOT EXISTS ux_raw_connections_dedupe ON raw_connections"
      "(host_id, COALESCE(pid,-1), COALESCE(local_ip,''), COALESCE(local_port,-1),"
@@ -440,6 +469,13 @@ DEDUPE_INDEXES = (
      "CREATE INDEX IF NOT EXISTS ix_detections_dedupe ON detections"
      "(host_id, rule_name, severity, last_seen_utc)"),
 )
+
+# v1 index name -> the v2 index that replaces it. Stores built by an earlier
+# release carry the v1 index; upgrade_dedupe_indexes() swaps it at startup.
+SUPERSEDED_DEDUPE_INDEXES = {
+    "ux_raw_logs_dedupe": "ux_raw_logs_dedupe_v2",
+    "ux_raw_processes_dedupe": "ux_raw_processes_dedupe_v2",
+}
 
 # ---------------------------------------------------------------------------
 # Layer 4.5 ML schema.
@@ -509,6 +545,74 @@ CREATE TABLE IF NOT EXISTS ml_drift_log (
 CREATE INDEX IF NOT EXISTS ix_ml_drift_time ON ml_drift_log(computed_at_utc);
 
 CREATE INDEX IF NOT EXISTS ix_det_rule_type ON detections(rule_type);
+
+-- ---- Phase 10: weekly MLOps pipeline (docs/ML_MLOPS_PLAN.md).
+-- One row per pipeline run; the dashboard's "Model operations" panel reads it.
+CREATE TABLE IF NOT EXISTS ml_pipeline_runs (
+    run_id TEXT PRIMARY KEY,
+    started_at_utc TEXT NOT NULL,
+    finished_at_utc TEXT,
+    status TEXT NOT NULL CHECK (status IN
+        ('running','succeeded','attention','failed','skipped')),
+    trigger TEXT NOT NULL DEFAULT 'schedule',
+    summary_json TEXT,
+    report_path TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_ml_pipeline_started ON ml_pipeline_runs(started_at_utc);
+
+-- A challenger model scored silently beside the champion (champion/challenger shadow).
+CREATE TABLE IF NOT EXISTS ml_shadow_trials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id TEXT NOT NULL,
+    components_json TEXT NOT NULL,
+    started_at_utc TEXT NOT NULL,
+    ended_at_utc TEXT,
+    status TEXT NOT NULL CHECK (status IN
+        ('running','promoted','rejected','inconclusive','superseded','aborted')),
+    offline_json TEXT,
+    online_json TEXT,
+    decision_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_ml_shadow_trials_status ON ml_shadow_trials(status);
+
+-- Per-hour aggregate of shadow scoring passes; bounded at 168 rows per weekly trial.
+CREATE TABLE IF NOT EXISTS ml_shadow_observations (
+    trial_id INTEGER NOT NULL REFERENCES ml_shadow_trials(id),
+    hour_utc TEXT NOT NULL,
+    passes INTEGER NOT NULL DEFAULT 0,
+    processes_scored INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    champion_ms_total REAL NOT NULL DEFAULT 0,
+    challenger_ms_total REAL NOT NULL DEFAULT 0,
+    challenger_ms_max REAL NOT NULL DEFAULT 0,
+    last_error TEXT,
+    PRIMARY KEY (trial_id, hour_utc)
+);
+
+-- Distinct processes either model would have reported during a trial.
+CREATE TABLE IF NOT EXISTS ml_shadow_flags (
+    trial_id INTEGER NOT NULL REFERENCES ml_shadow_trials(id),
+    process_key TEXT NOT NULL,
+    host_id INTEGER,
+    pid INTEGER,
+    name TEXT,
+    champion_flag INTEGER NOT NULL DEFAULT 0,
+    challenger_flag INTEGER NOT NULL DEFAULT 0,
+    champion_score REAL,
+    challenger_score REAL,
+    first_seen_utc TEXT NOT NULL,
+    PRIMARY KEY (trial_id, process_key)
+);
+
+-- Analyst verdicts on ML leads. They feed the next retrain (see ml/mlops/data.py) and
+-- the online "confirmed threats kept" gate.
+CREATE TABLE IF NOT EXISTS ml_feedback (
+    detection_id INTEGER PRIMARY KEY REFERENCES detections(id),
+    verdict TEXT NOT NULL CHECK (verdict IN ('confirmed','benign')),
+    note TEXT,
+    recorded_at_utc TEXT NOT NULL,
+    recorded_by TEXT NOT NULL DEFAULT 'analyst'
+);
 """
 
 # Indexes over the columns added by ML_DETECTION_COLUMNS. These MUST be created
@@ -517,6 +621,9 @@ CREATE INDEX IF NOT EXISTS ix_det_rule_type ON detections(rule_type);
 ML_DETECTION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_det_confidence ON detections(confidence_score)",
     "CREATE INDEX IF NOT EXISTS ix_det_anomaly ON detections(anomaly_score)",
+    # The Threat Hunting queue filters on rule_type and orders by these two scores; this
+    # covers that path so the page stays fast as findings accumulate.
+    "CREATE INDEX IF NOT EXISTS ix_det_ml_queue ON detections(rule_type, confidence_score DESC, anomaly_score DESC)",
 )
 
 # Columns added to the existing raw_processes table.
@@ -673,6 +780,9 @@ def ensure_dedupe_indexes(conn):
     is inactive until the duplicates are purged.
     """
     created, skipped = [], []
+    # A superseded v1 index would keep enforcing the old, too-coarse key.
+    for old in SUPERSEDED_DEDUPE_INDEXES:
+        conn.execute(f"DROP INDEX IF EXISTS {old}")
     for name, ddl in DEDUPE_INDEXES:
         try:
             conn.execute(ddl)
@@ -683,12 +793,55 @@ def ensure_dedupe_indexes(conn):
     return created, skipped
 
 
+def drop_dedupe_indexes(conn):
+    """Drop every natural-key unique index, current and superseded.
+
+    For stores that must keep every raw row as a distinct sample - the offline ML
+    training corpus above all, which loads with plain INSERTs. Driven by the
+    registry, so a renamed or added index cannot be silently left behind; a
+    hard-coded list of names already missed the v2 rename once.
+    """
+    names = [name for name, ddl in DEDUPE_INDEXES if "UNIQUE" in ddl]
+    names += list(SUPERSEDED_DEDUPE_INDEXES)
+    for name in names:
+        conn.execute(f"DROP INDEX IF EXISTS {name}")
+    conn.commit()
+    return names
+
+
+def upgrade_dedupe_indexes(conn):
+    """Replace v1 dedupe indexes with their v2 successors. Returns the swaps made.
+
+    Runs at every startup but only does work on a store that still carries a v1
+    index. Building the v2 index there cannot fail: each v2 key is its v1 key
+    plus one more column, so rows that were unique under v1 stay unique under v2.
+    The one-off cost is a single index build.
+
+    A store with no v1 index is left alone. In particular this does not create
+    dedupe indexes on a legacy store that never had them; that stays the job of
+    scripts/purge_host_data.py, so startup is never blocked by a large scan.
+    """
+    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    ddl_by_name = dict(DEDUPE_INDEXES)
+    swapped = []
+    for old, new in SUPERSEDED_DEDUPE_INDEXES.items():
+        if old not in present:
+            continue
+        conn.execute(f"DROP INDEX {old}")
+        conn.execute(ddl_by_name[new])
+        swapped.append(f"{old} -> {new}")
+    conn.commit()
+    return swapped
+
+
 def init_db(db_path=None):
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
         ensure_schema(conn)
+        # Table-shape migrations first, then index work over the settled shape.
         ensure_command_types(conn)
+        upgrade_dedupe_indexes(conn)
         conn.commit()
         # raw_velociraptor is newer than the legacy-store guard below, so its
         # dedupe index is built here regardless of how much history the database
