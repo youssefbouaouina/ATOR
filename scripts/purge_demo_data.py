@@ -21,6 +21,7 @@ RAW_TABLES = (
     "raw_persistence",
     "raw_logs",
     "raw_files",
+    "raw_velociraptor",
 )
 
 

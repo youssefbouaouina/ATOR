@@ -20,6 +20,9 @@ DEFAULT_CONFIG = {
     "enable_gpu_probe": True,
     "telemetry_mode": "full",          # "full" | "lightweight"
     "lightweight_interval_seconds": 30,
+    # Absolute path to a standalone velociraptor binary. Empty means "look in
+    # the install's tools/ directory and then PATH" (see collectors.velociraptor).
+    "velociraptor_path": "",
 }
 
 
@@ -223,10 +226,15 @@ except ImportError:
         return hashlib.sha256(data).hexdigest()
 
 
-def build_manifest(collection_id, started_at, finished_at, artifacts):
+def build_manifest(collection_id, started_at, finished_at, artifacts, extra=None):
     entries = []
     order = []
-    for name in COLLECTOR_ORDER_VOLATILITY_FIRST:
+    # The routine collectors first, in volatility order; then any on-demand
+    # collector present in this payload (velociraptor) so its rows are covered
+    # by the same per-set hash and manifest hash as everything else.
+    names = list(COLLECTOR_ORDER_VOLATILITY_FIRST)
+    names += [n for n in sorted(artifacts) if n not in names]
+    for name in names:
         items = artifacts.get(name) or []
         blob = json.dumps(items, sort_keys=True, default=str).encode()
         entries.append({
@@ -245,6 +253,10 @@ def build_manifest(collection_id, started_at, finished_at, artifacts):
         "collector_order": order,
         "artifacts": entries,
     }
+    # Merged BEFORE hashing: anything a caller adds afterwards would sit outside
+    # manifest_sha256 and break verification at the server.
+    if extra:
+        manifest.update(extra)
     manifest["manifest_sha256"] = sha256_bytes(
         json.dumps({k: v for k, v in manifest.items()}, sort_keys=True, default=str).encode()
     )
@@ -272,6 +284,34 @@ def run_collection():
             artifacts[name] = [{"_error": f"{type(exc).__name__}: {exc}"}]
     finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
     manifest = build_manifest(collection_id, started, finished, artifacts)
+    return {"manifest": manifest, "artifacts": artifacts}
+
+
+def run_velociraptor_collection(artifact_names):
+    """Run an on-demand Velociraptor artifact sweep as its own collection.
+
+    It gets a collection_id and manifest of its own rather than riding along
+    with the routine collection: the rows are evidence, so they need the same
+    integrity record, and an analyst-requested sweep should be attributable to
+    the moment it was asked for.
+    """
+    from datetime import datetime, timezone
+
+    from agent.collectors import velociraptor
+
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    collection_id = str(uuid.uuid4())
+    try:
+        rows = velociraptor.collect(artifact_names)
+    except Exception as exc:
+        rows = [{"_error": f"{type(exc).__name__}: {exc}"}]
+    finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    artifacts = {"velociraptor": rows}
+    manifest = build_manifest(
+        collection_id, started, finished, artifacts,
+        extra={"trigger": "velociraptor_collect",
+               "requested_artifacts": list(artifact_names or [])},
+    )
     return {"manifest": manifest, "artifacts": artifacts}
 
 
@@ -448,6 +488,31 @@ def run_lightweight_sample(cfg):
         return False
 
 
+_velo_probe_cache = {"checked_at": 0.0, "value": None}
+_VELO_PROBE_TTL_SECONDS = 900
+
+
+def velociraptor_status(cfg=None, ttl=_VELO_PROBE_TTL_SECONDS):
+    """Cached "can this endpoint run artifacts?" probe.
+
+    Cached because the probe execs the binary and the heartbeat runs every ~20s;
+    re-checking that often would cost more than the feature is worth. The TTL
+    still lets an operator drop the binary in and have it noticed without
+    restarting the agent.
+    """
+    import time
+    now = time.time()
+    if _velo_probe_cache["value"] is not None and now - _velo_probe_cache["checked_at"] < ttl:
+        return _velo_probe_cache["value"]
+    try:
+        from agent.collectors import velociraptor
+        value = velociraptor.probe(cfg)
+    except Exception as exc:
+        value = {"present": False, "reason": f"{type(exc).__name__}: {exc}"}
+    _velo_probe_cache.update({"checked_at": now, "value": value})
+    return value
+
+
 def heartbeat(cfg, state=None):
     """Send a heartbeat and return the server's desired state + any queued commands."""
     import requests
@@ -457,6 +522,7 @@ def heartbeat(cfg, state=None):
         "agent_version": AGENT_VERSION,
         "telemetry_mode": cfg.get("telemetry_mode", "full"),
         "spool_count": _spool_count(cfg),
+        "velociraptor": velociraptor_status(cfg),
     }
     resp = requests.post(
         url, json=body, timeout=15,
@@ -475,6 +541,25 @@ def _spool_count(cfg):
         return len([f for f in os.listdir(spool) if f.endswith(".json")])
     except OSError:
         return 0
+
+
+def _command_artifacts(cmd):
+    """Artifact names carried by a queued command.
+
+    The server sends them as a JSON object in ``args``. Anything malformed
+    yields an empty list, which the collector then rejects - the agent never
+    guesses what it was asked to run.
+    """
+    args = cmd.get("args")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(args, dict):
+        return []
+    names = args.get("artifacts")
+    return [str(n) for n in names] if isinstance(names, list) else []
 
 
 def execute_commands(cfg, commands):
@@ -500,6 +585,27 @@ def execute_commands(cfg, commands):
                     spool_payload(cfg, payload)
                     detail["delivery"] = "spooled"
                     detail["reason"] = str(exc)
+            elif action == "velociraptor_collect":
+                requested = _command_artifacts(cmd)
+                payload = run_velociraptor_collection(requested)
+                rows = payload["artifacts"]["velociraptor"]
+                detail["artifacts"] = requested
+                detail["rows"] = len([r for r in rows if "_error" not in r])
+                failures = [r for r in rows if "_error" in r]
+                if failures:
+                    detail["failed"] = [{"artifact": r.get("artifact"), "error": r["_error"]}
+                                        for r in failures][:10]
+                try:
+                    _send_try(cfg, send_payload, cfg, payload)
+                    detail["delivery"] = "sent"
+                except Exception as exc:
+                    spool_payload(cfg, payload)
+                    detail["delivery"] = "spooled"
+                    detail["reason"] = str(exc)
+                # Every requested artifact failing is a failed command, not a
+                # quiet success with zero rows - the analyst needs to see that.
+                if failures and not detail["rows"]:
+                    status = "failed"
             elif action == "detect_now":
                 # Detection runs server-side; the fresh collection above is what
                 # the engine needs, so acknowledge and let the server scan.

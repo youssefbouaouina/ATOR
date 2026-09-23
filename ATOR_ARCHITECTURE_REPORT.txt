@@ -40,6 +40,7 @@ analyst-facing dashboards plus machine-readable reports (PDF / JSON / STIX 2.1
    |-- scripts/                bootstrap/deploy/test helpers
    |-- tests/                  pytest suites (agent, api, engine, sigma, ...)
    |-- docs/                   DEPLOYMENT / METHODOLOGY / VALIDATION / LIMITATIONS
+   |                           VELOCIRAPTOR (deep-dive artifact collection)
    |-- samples/                uploaded detection samples
    `-- reports_out/            generated PDF/JSON/STIX exports
 
@@ -91,6 +92,10 @@ Collector registry — agent/collectors/__init__.py (RFC 3227 volatility order):
     7. resources     CPU/mem/disk/resource alerts -> resource_samples
     8. agent_self    process/thread/fd counters of the agent itself
                      -> agent_self_samples
+    -. velociraptor  ON-DEMAND ONLY (not part of the volatility-ordered loop):
+                     runs allow-listed Velociraptor artifacts via a standalone
+                     binary on the endpoint -> raw_velociraptor
+                     (see docs/VELOCIRAPTOR.md)
 
 Evidence integrity: every collection produces an EVIDENCE MANIFEST with UTC
 start/end timestamps, hostname, agent version, per-collector artifact counts,
@@ -114,6 +119,7 @@ database.connect dependency.
 3.1 Database schema (server/db.py)
   - hosts, containers                      fleet inventory + docker flag
   - raw_processes / raw_connections / raw_persistence / raw_logs / raw_files
+  - raw_velociraptor                       on-demand Velociraptor artifact rows
   - ioc_store                              analyst watchlist (type, value, source)
   - detections                             one row per fired rule hit
   - enriched_detections                    MITRE enrichment (technique/tactic JSON)
@@ -130,6 +136,9 @@ database.connect dependency.
                                             engine trigger via BackgroundTasks)
   POST /api/v1/samples                      upload suspect files (server YARA scan)
   POST /api/v1/engine/run                   manual engine kick
+  GET  /api/v1/velociraptor/catalog         artifact allow-list (optionally per OS)
+  POST /api/v1/hosts/{id}/velociraptor      queue an on-demand artifact sweep
+  GET  /api/v1/hosts/{id}/velociraptor      collected artifact rows + sweep history
   GET  /api/v1/hosts  |  /api/v1/detections | /api/v1/timeline | /api/v1/soc/{id}
   POST /api/v1/policies , POST /api/v1/iocs , GET /api/v1/iocs/search
   POST /api/v1/approvals/{id}/decide        analyst approve/reject containment
@@ -177,6 +186,11 @@ run_engine() (engine/__init__.py) is the orchestrator:
            yara_scanner.correlate_files     (rule_type = "yara")
                - converts agent-supplied yara_matches (already scanned locally)
                  into detections.
+           velociraptor.correlate_collection
+               - reshapes raw_velociraptor rows into the structures the IOC and
+                 YARA correlators already take, so artifact rows fire the same
+                 detectors; stamps evidence with collector=velociraptor and the
+                 originating artifact name.
 
   3. attack_mapper.enrich_detections (engine/attack_mapper.py)
        - Joins every detection that carries a technique_id against the official
@@ -255,6 +269,8 @@ reporter.py           (engine/reporter.py)
   /containment      Policy rules + pending/decided approval queue
   /intel            Threat intel watchlist + hash/IP lookup
   /reports          Per-host PDF / JSON / STIX / Navigator exports
+  /velociraptor     Deep-dive artifact collection: probe state, artifact
+                    picker, sweep history, collected rows
   /telemetry        Live agent telemetry table (5s poll, fetch no-store)
   /enrollments      Two-phase enrollment requests management
   Realtime: SSE streams (/api/v1/stream/*) drive live charts on the dashboard.

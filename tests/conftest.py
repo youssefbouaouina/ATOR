@@ -49,3 +49,12 @@ def client(tmp_db, monkeypatch):
     from server.api import app
     with TestClient(app) as tc:
         yield tc
+
+
+@pytest.fixture()
+def tmp_out():
+    """Isolated directory for Velociraptor raw-output files."""
+    import shutil
+    path = tempfile.mkdtemp(prefix="ator-velo-test-")
+    yield path
+    shutil.rmtree(path, ignore_errors=True)

@@ -32,6 +32,7 @@ HOST_SCOPED_TABLES = (
     "raw_logs",
     "raw_persistence",
     "raw_processes",
+    "raw_velociraptor",
     "containers",
     "resource_alerts",
     "resource_samples",

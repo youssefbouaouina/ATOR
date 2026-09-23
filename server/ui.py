@@ -181,6 +181,80 @@ def register_ui(target_app):
             "hosts": hosts, "page": "endpoints",
         })
 
+    @target_app.get("/velociraptor", response_class=HTMLResponse)
+    def velociraptor_page(request: Request, host_id: int = 0, artifact: str = "",
+                          conn=Depends(database.connect)):
+        """Deep-dive artifact collection: pick a host, run artifacts, read rows."""
+        from agent import velociraptor_catalog as catalog
+        from server.api import _velociraptor_host_status
+        from server.engine import velociraptor as velo_engine
+
+        hosts = [dict(r) for r in conn.execute(
+            """SELECT id, hostname, os_type, is_active, agent_desired_state,
+                      velociraptor_status, velociraptor_checked_at_utc
+               FROM hosts WHERE is_active=1 ORDER BY hostname""")]
+        for h in hosts:
+            h["velociraptor"] = _velociraptor_host_status(h)
+        selected = host_id or (hosts[0]["id"] if hosts else 0)
+        selected_host = next((h for h in hosts if h["id"] == selected), None)
+        selected = selected_host["id"] if selected_host else 0
+
+        available, summary, sweeps, rows = [], [], [], []
+        if selected_host:
+            available = catalog.for_platform(selected_host["os_type"])
+            summary = velo_engine.summarise(conn, selected)
+            sweeps = [dict(r) for r in conn.execute(
+                """SELECT id, args, status, requested_by, created_at_utc,
+                          claimed_at_utc, finished_at_utc, result
+                   FROM agent_commands
+                   WHERE host_id=? AND command='velociraptor_collect'
+                   ORDER BY id DESC LIMIT 10""", (selected,))]
+            for sweep in sweeps:
+                for field in ("args", "result"):
+                    try:
+                        sweep[field] = json.loads(sweep[field]) if sweep[field] else {}
+                    except (json.JSONDecodeError, TypeError):
+                        sweep[field] = {}
+            if artifact:
+                rows = [dict(r) for r in conn.execute(
+                    """SELECT artifact, row_json, path, sha256, remote_ip, process_name,
+                              pid, last_seen_utc
+                       FROM raw_velociraptor WHERE host_id=? AND artifact=?
+                       ORDER BY last_seen_utc DESC, id DESC LIMIT 200""",
+                    (selected, artifact))]
+        conn.close()
+        return tpl.TemplateResponse(request, "velociraptor.html", {
+            "hosts": hosts, "selected": selected, "selected_host": selected_host,
+            "available": available, "summary": summary, "sweeps": sweeps,
+            "rows": rows, "artifact": artifact,
+            "max_per_request": catalog.MAX_ARTIFACTS_PER_REQUEST,
+            "page": "velociraptor",
+        })
+
+    @target_app.post("/ui/velociraptor/{host_id}/collect")
+    async def ui_velociraptor_collect(host_id: int, request: Request,
+                                      conn=Depends(database.connect)):
+        from agent import velociraptor_catalog as catalog
+        from server.api import _queue_command
+        form = await request.form()
+        requested = [str(a) for a in form.getlist("artifacts")]
+        row = conn.execute(
+            """SELECT hostname, os_type, is_active,
+                      COALESCE(agent_desired_state,'running') AS desired
+               FROM hosts WHERE id=?""", (host_id,)).fetchone()
+        if row and row["is_active"] and row["desired"] != "paused":
+            accepted, rejected = catalog.validate(requested, os_type=row["os_type"])
+            if accepted:
+                command_id = _queue_command(conn, host_id, "velociraptor_collect",
+                                            args={"artifacts": accepted})
+                database.audit(conn, "analyst-ui", "velociraptor_collection_requested",
+                               {"host_id": host_id, "hostname": row["hostname"],
+                                "command_id": command_id, "artifacts": accepted,
+                                "rejected": rejected})
+        conn.commit()
+        conn.close()
+        return RedirectResponse(f"/velociraptor?host_id={host_id}", status_code=303)
+
     @target_app.get("/containment", response_class=HTMLResponse)
     def containment(request: Request, conn=Depends(database.connect)):
         policies = [dict(r) for r in conn.execute("SELECT * FROM policies ORDER BY id DESC")]

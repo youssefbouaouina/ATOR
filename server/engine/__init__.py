@@ -8,6 +8,7 @@ from server.engine import attack_mapper
 from server.engine.ioc_correlator import correlate_batch as ioc_correlate
 from server.engine.ioc_correlator import correlate_domains as domain_correlate
 from server.engine.sigma_runner import run as sigma_run
+from server.engine.velociraptor import correlate_collection as velociraptor_correlate
 from server.engine.yara_scanner import correlate_files
 
 SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -135,6 +136,10 @@ def correlate_collection(conn, collection_id):
         conn, host_id, collection_id, ts,
         [f for f in artifacts["files_triage"] if f.get("yara_matches")],
     )
+    # A Velociraptor sweep arrives as its own collection, so its rows are
+    # correlated here too - the same watermark/manifest bookkeeping then applies
+    # to it unchanged.
+    detections += velociraptor_correlate(conn, host_id, collection_id, ts)
     return detections
 
 

@@ -19,6 +19,23 @@ threat-hunting aid, not a full EDR.
   reliable; process↔container mapping relies on cgroup paths visible to the
   agent (`--pid=host` or native engine). Port-mapping attribution is heuristic.
 
+### Velociraptor deep-dive artifacts
+
+- Require a `velociraptor` binary on the endpoint; without it a sweep fails with
+  that reason recorded and nothing is collected.
+- On Windows the agent must run elevated (SYSTEM via the scheduled task, or an
+  Administrator shell). The binary's manifest requests `highestAvailable`, so a
+  non-elevated agent cannot launch it at all - WinError 740, reported as the
+  sweep's failure reason.
+- Restricted to the allow-list in `agent/velociraptor_catalog.py`. This is
+  deliberate (the command channel would otherwise be arbitrary VQL execution)
+  but it does mean the full Velociraptor artifact library is not reachable.
+- Artifact parameters are not exposed; every artifact runs with its defaults.
+- Capped at 500 rows per artifact and 8 KB per row. A truncation marker row is
+  stored so the cap is visible, but the discarded rows are gone.
+- Run on demand only. A sweep reflects the endpoint at the moment it ran, so an
+  artifact that came back clean says nothing about the hours before or after.
+
 ## Detection gaps
 
 - Sigma translation covers field-based selections over process/network tables;

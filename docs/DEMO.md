@@ -74,6 +74,45 @@ for a collection, forces a scan, then calls the host-authenticated
 `POST /api/v1/demo/purge` to remove its own demo data from the server - so it
 works on a remote VM with no shell access to the server host.
 
+## Velociraptor deep-dive artifacts
+
+Two ways to show this, depending on whether you want live collection or a
+guaranteed result.
+
+### Seeded (no endpoint, no elevation, always works)
+
+```powershell
+.venv\Scripts\python.exe scripts\demo_velociraptor.py --hostname <host>
+# undo:
+.venv\Scripts\python.exe scripts\demo_velociraptor.py --hostname <host> --purge
+```
+
+This is not a mock-up: rows are shaped exactly like real Velociraptor output and
+go through the real agent-side normaliser, the real server ingest helper, a real
+evidence manifest and the real detection engine. Only the subprocess exec of
+velociraptor.exe is skipped.
+
+It seeds one coherent story on a Windows host - a masquerading binary in a
+world-writable directory, beaconing to a C2 address, held there by a scheduled
+task and a WMI event consumer, with prefetch proving execution - and produces
+three findings:
+
+| Severity | Finding | From artifact |
+|----------|---------|---------------|
+| critical | IOC hash | `Windows.System.Pslist` |
+| critical | IOC ip | `Windows.Network.Netstat` |
+| high | IOC hash (on disk) | `Windows.System.Pslist` |
+
+Show it at `/velociraptor?host_id=<id>`, then export the host report: the
+findings appear in the detection annex citing their originating artifact, and
+section 10 lists every artifact collected.
+
+### Live (real collection from an endpoint)
+
+Needs the Velociraptor binary on the endpoint and an elevated agent - see
+docs/VELOCIRAPTOR.md. Queue a sweep from `/velociraptor`, wait one heartbeat,
+refresh.
+
 ## What "delete everything after" removes
 
 Both demos, on cleanup, remove: the holder processes, the dropped marker files,
