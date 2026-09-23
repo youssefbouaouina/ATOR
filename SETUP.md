@@ -3,8 +3,8 @@
 Everything needed to go from `git clone` to a working server, an enrolled endpoint, and a
 trained ML layer. `README.md` describes what the framework is; this file is how to run it.
 
-> **Kept current with every push.** Last verified 2026-09-22 on branch `ML` (Phase 10),
-> Windows 11 + Python 3.13, `pytest tests` → 635 passed, 1 skipped.
+> **Kept current with every push.** Last verified 2026-09-23 on branch `ML` (Phase 10),
+> Windows 11 + Python 3.13, `pytest tests` → 677 passed, 1 skipped.
 
 ## 0. What the clone does *not* contain
 

@@ -28,6 +28,11 @@
   .results li { font-size: .82rem; }
   .how dt { font-weight: 700; font-size: .82rem; }
   .how dd { font-size: .82rem; color: var(--ator-muted); }
+  .lead-filters { background: var(--ator-bg); }
+  .lead-filters .btn-check:checked + .btn { background: var(--ator-accent); border-color: var(--ator-accent); color: #fff; }
+  #leadResults { transition: opacity .12s ease; min-height: 120px; }
+  #leadResults[data-loading="1"] { opacity: .45; pointer-events: none; }
+  .lead-pager .page-link { padding: .15rem .5rem; font-size: .8rem; }
   .verdict-tag { font-size: .68rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
   .verdict-confirmed { background: var(--ator-critical, #b42318); color: #fff; }
   .verdict-benign { background: var(--ator-border); color: var(--ator-ink); }
@@ -135,138 +140,86 @@
 </details>
 
 <!-- ---------------------------------------------------------------- leads -->
-<div class="card ator-card mb-3">
+<div class="card ator-card mb-3" id="leadQueue">
   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
     <span><i class="bi bi-crosshair me-1"></i>Behavioural leads
-      <span class="chip-count ms-1">{{ anomalies|length }}</span></span>
-    <span class="small text-muted">ordered by threat likelihood, then rarity &middot; click a lead for its evidence</span>
+      <span class="chip-count ms-1" id="leadCount">{{ queue.total }}</span></span>
+    <span class="small text-muted">click a lead for its evidence</span>
   </div>
-  <div class="card-body p-0">
-    <div class="table-responsive">
-    <table class="table table-sm table-hover mb-0 align-middle">
-      <thead><tr>
-        <th>Priority</th><th>Host</th><th>Process</th><th>Threat likelihood</th>
-        <th>Rarity</th><th>Likely ATT&amp;CK tactic</th><th>Why it was flagged</th><th>Seen</th>
-      </tr></thead>
-      <tbody>
-      {% for a in anomalies %}
-        <tr class="lead-row" data-bs-toggle="collapse" data-bs-target="#lead{{ a.id }}"
-            aria-expanded="false" aria-controls="lead{{ a.id }}">
-          <td><span class="sev-chip {{ a.priority.css }}" title="{{ a.priority.title }}">{{ a.priority.label }}</span></td>
-          <td class="small">{{ a.hostname or ('host ' ~ a.host_id) }}</td>
-          <td><span class="mono small fw-semibold">{{ a.process }}</span>
-            {% if a.analyst_verdict == 'confirmed' %}<span class="verdict-tag verdict-confirmed ms-1" title="An analyst confirmed this lead as a threat">Confirmed</span>
-            {% elif a.analyst_verdict == 'benign' %}<span class="verdict-tag verdict-benign ms-1" title="An analyst dismissed this lead as benign">Dismissed</span>{% endif %}
-            {% if a.summary.exe_path %}<div class="text-muted" style="font-size:.7rem;max-width:220px"
-                 title="{{ a.summary.exe_path }}">{{ a.summary.exe_path|truncate(38, True) }}</div>{% endif %}</td>
-          <td>
-            {% if a.likelihood %}
-              <span class="risk-tag {{ a.likelihood.css }}"
-                    title="Resemblance to known attack activity (model confidence {{ '%.2f'|format(a.likelihood.raw) }})">
-                {{ a.likelihood.level }} &middot; {{ a.likelihood.pct }}%</span>
-            {% else %}<span class="text-muted small" title="not scored yet">&mdash;</span>{% endif %}
-          </td>
-          <td>
-            {% if a.rarity %}
-              <span class="small fw-semibold" title="{{ a.rarity.sentence }} (anomaly score {{ '%.4f'|format(a.rarity.raw) }})">
-                {{ a.rarity.text }}</span>
-            {% else %}<span class="text-muted">&mdash;</span>{% endif %}
-          </td>
-          <td class="small">
-            {% for t in a.tactics %}
-              <span class="badge bg-secondary" title="Advisory: {{ t.pct }}% model probability{% if t.id %} &middot; MITRE {{ t.id }}{% endif %}">
-                {{ t.name }}{% if t.id %} <span class="opacity-75">{{ t.id }}</span>{% endif %}</span>
-            {% else %}<span class="text-muted">&mdash;</span>{% endfor %}
-          </td>
-          <td>
-            {% for ind in a.indicators[:2] %}
-              <span class="ind-chip" title="{{ ind.category }} &middot; {{ ind.strength }} &middot; {{ ind.feature }}">
-                <i class="bi {{ ind.icon }}"></i>{{ ind.text }}</span>
-            {% else %}<span class="text-muted small">&mdash;</span>{% endfor %}
-            {% if a.indicators|length > 2 %}<span class="text-muted small">+{{ a.indicators|length - 2 }} more</span>{% endif %}
-          </td>
-          <td class="small text-nowrap">
-            {% if a.hit_count and a.hit_count > 1 %}
-              <span class="chip-count" title="flagged on {{ a.hit_count }} sweeps">&times;{{ a.hit_count }}</span>
-            {% endif %}
-            <div class="mono text-muted" style="font-size:.7rem">{{ ((a.last_seen_utc or a.detected_at_utc) or '')[:16]|replace('T',' ') }}</div>
-          </td>
-        </tr>
-        <tr class="collapse" id="lead{{ a.id }}">
-          <td colspan="8" class="bg-light">
-            <div class="row g-3 p-2 evidence">
-              <div class="col-lg-5">
-                <div class="section-label mb-2">Evidence</div>
-                <dl class="row mb-0 small">
-                  <dt class="col-4">Priority</dt><dd class="col-8">{{ a.priority.title }}</dd>
-                  <dt class="col-4">Severity</dt><dd class="col-8"><span class="sev-chip badge-{{ a.severity }}">{{ a.severity|upper }}</span>
-                    <span class="text-muted small">set by rarity when first detected</span></dd>
-                  <dt class="col-4">Process</dt><dd class="col-8 mono">{{ a.process }}{% if a.summary.pid %} (PID {{ a.summary.pid }}){% endif %}</dd>
-                  <dt class="col-4">Parent PID</dt><dd class="col-8 mono">{{ a.summary.ppid or '—' }}</dd>
-                  <dt class="col-4">Account</dt><dd class="col-8 mono">{{ a.summary.username or '—' }}</dd>
-                  <dt class="col-4">Image path</dt><dd class="col-8 mono text-break">{{ a.summary.exe_path or '—' }}</dd>
-                  <dt class="col-4">First seen</dt><dd class="col-8 mono">{{ (a.detected_at_utc or '')[:19]|replace('T',' ') }} UTC</dd>
-                  <dt class="col-4">Last seen</dt><dd class="col-8 mono">{{ ((a.last_seen_utc or a.detected_at_utc) or '')[:19]|replace('T',' ') }} UTC
-                    {% if a.hit_count and a.hit_count > 1 %}<span class="text-muted">&middot; flagged on {{ a.hit_count }} sweeps</span>{% endif %}</dd>
-                </dl>
-                <div class="section-label mt-2 mb-1">Command line</div>
-                {% if a.summary.cmdline %}<pre class="cmdline">{{ a.summary.cmdline }}</pre>
-                {% else %}<div class="small text-muted">Not captured &mdash; the agent could not read it (protected process or agent not elevated).</div>{% endif %}
-                <div class="section-label mt-3 mb-1">Analyst verdict</div>
-                <div class="d-flex flex-wrap align-items-center gap-2 verdict-box" data-detection="{{ a.id }}">
-                  <button class="btn btn-sm {{ 'btn-danger' if a.analyst_verdict == 'confirmed' else 'btn-outline-danger' }} verdict-btn"
-                          data-verdict="{{ 'clear' if a.analyst_verdict == 'confirmed' else 'confirmed' }}">
-                    <i class="bi bi-shield-fill-exclamation me-1"></i>Confirmed threat</button>
-                  <button class="btn btn-sm {{ 'btn-secondary' if a.analyst_verdict == 'benign' else 'btn-outline-secondary' }} verdict-btn"
-                          data-verdict="{{ 'clear' if a.analyst_verdict == 'benign' else 'benign' }}">
-                    <i class="bi bi-check2-circle me-1"></i>Benign &middot; false positive</button>
-                  {% if a.analyst_verdict %}<span class="small text-muted">recorded {{ (a.verdict_at or '')[:16]|replace('T',' ') }} &middot; click again to clear</span>{% endif %}
-                </div>
-                <div class="text-muted mt-1" style="font-size:.72rem">
-                  Your verdict trains next week's model: a dismissed lead becomes part of what
-                  &ldquo;normal&rdquo; looks like, and every future model must keep catching confirmed threats.
-                </div>
-              </div>
-              <div class="col-lg-7">
-                <div class="section-label mb-2">Why it was flagged</div>
-                {% for ind in a.indicators %}
-                  <div class="d-flex align-items-center gap-2 small mb-1">
-                    {% if ind.bars %}
-                      <span class="ind-bars" title="{{ ind.strength }}">
-                        {% for i in range(3) %}<span class="{{ 'on' if i < ind.bars }}"></span>{% endfor %}</span>
-                    {% else %}
-                      <span class="badge bg-light text-dark border" style="font-size:.65rem">{{ ind.strength }}</span>
-                    {% endif %}
-                    <i class="bi {{ ind.icon }} text-muted"></i>
-                    <span>{{ ind.text }}</span>
-                    <span class="text-muted" style="font-size:.7rem">{{ ind.category }}</span>
-                  </div>
-                {% else %}
-                  <div class="small text-muted">No indicators recorded for this lead.</div>
-                {% endfor %}
-                <div class="small text-muted mt-2">
-                  <i class="bi bi-info-circle me-1"></i>Indicators describe how this process differs from
-                  normal activity. They explain the lead; they do not prove intent.
-                </div>
-                <div class="text-muted mt-1" style="font-size:.7rem">
-                  technical: anomaly score {{ '%.4f'|format(a.anomaly_score or 0) }}{% if a.confidence_score is not none %}
-                  &middot; confidence {{ '%.2f'|format(a.confidence_score) }}{% endif %}
-                  {% if a.ml_explanation.tier %}&middot; model tier {{ a.ml_explanation.tier|upper }}{% endif %}
-                  &middot; detection #{{ a.id }}
-                </div>
-              </div>
-            </div>
-          </td>
-        </tr>
-      {% else %}
-        <tr><td colspan="8" class="p-0">
-          <div class="empty-hint"><i class="bi bi-search d-block mb-1" style="font-size:1.4rem"></i>
-            No behavioural leads yet. Press <b>Run hunt now</b>, or wait for the next engine cycle.</div>
-        </td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
+
+  {# Plain GET form: it works without JavaScript, every view has a shareable URL, and the
+     browser's back button moves between filter states. The script below upgrades it to
+     fetch just the results table. #}
+  <form class="lead-filters px-3 py-2 border-bottom" id="leadFilters" method="get" action="/ml">
+    <div class="row g-2 align-items-center">
+      <div class="col-12 col-lg-4">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input type="search" class="form-control" name="q" id="leadSearch"
+                 value="{{ queue.filters.q }}" autocomplete="off" spellcheck="false"
+                 placeholder="Search process, command line, path, account or host"
+                 aria-label="Search leads">
+        </div>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="host_id" aria-label="Host">
+          <option value="">All hosts</option>
+          {% for h in queue.options.hosts %}
+            <option value="{{ h.id }}" {{ 'selected' if queue.filters.host_id == h.id }}>{{ h.hostname }} ({{ h.leads }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="verdict" aria-label="Analyst verdict">
+          <option value="">Any verdict</option>
+          {% for value, label in queue.options.verdicts.items() %}
+            <option value="{{ value }}" {{ 'selected' if queue.filters.verdict == value }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="tactic" aria-label="ATT&amp;CK tactic">
+          <option value="">Any tactic</option>
+          <option value="any" {{ 'selected' if queue.filters.tactic == 'any' }}>With a tactic</option>
+          <option value="none" {{ 'selected' if queue.filters.tactic == 'none' }}>Without a tactic</option>
+          {% for t in queue.options.tactics %}
+            <option value="{{ t.value }}" {{ 'selected' if queue.filters.tactic == t.value }}>{{ t.name }} ({{ t.leads }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-6 col-lg-2">
+        <select class="form-select form-select-sm" name="sort" aria-label="Sort by">
+          {% for value, spec in queue.options.sorts.items() %}
+            <option value="{{ value }}" {{ 'selected' if queue.sort == value }}>{{ spec[0] }}</option>
+          {% endfor %}
+        </select>
+      </div>
     </div>
+    <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+      <span class="small text-muted">Priority</span>
+      {% for p in ['P1', 'P2', 'P3', 'P4'] %}
+        <input type="checkbox" class="btn-check" name="priority" value="{{ p }}" id="prio{{ p }}"
+               {{ 'checked' if p in queue.filters.priority }} autocomplete="off">
+        <label class="btn btn-sm btn-outline-secondary" for="prio{{ p }}">{{ p }}</label>
+      {% endfor %}
+      <span class="ms-auto d-flex align-items-center gap-2">
+        {# Always rendered: the filter bar is not part of the swapped region, so a button
+           that only existed when filters were active could never appear after one. #}
+        <button type="button" class="btn btn-sm btn-link text-decoration-none p-0"
+                data-lead-clear {{ 'hidden' if not queue.filters_active }}>
+          <i class="bi bi-x-circle me-1"></i>Clear filters</button>
+        <select class="form-select form-select-sm w-auto" name="per_page" aria-label="Leads per page">
+          {% for n in queue.options.per_page %}
+            <option value="{{ n }}" {{ 'selected' if queue.per_page == n }}>{{ n }} / page</option>
+          {% endfor %}
+        </select>
+        <noscript><button class="btn btn-sm btn-primary" type="submit">Apply</button></noscript>
+      </span>
+    </div>
+  </form>
+
+  <div id="leadResults" aria-live="polite">
+{% include "ml_leads.html" %}
   </div>
   <div class="card-footer small text-muted">
     These are statistical findings, not rule matches &mdash; verify before acting.
@@ -518,8 +471,11 @@
       finally { busy(scoreBtn, false, label); }
     });
   }
-  document.querySelectorAll('.verdict-btn').forEach(btn => {
-    btn.addEventListener('click', async (ev) => {
+  // Delegated: the rows are replaced whenever a filter changes, so per-element listeners
+  // would stop working after the first search.
+  document.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('.verdict-btn');
+    if (btn) {
       ev.stopPropagation();
       const box = btn.closest('.verdict-box');
       const verdict = btn.dataset.verdict;
@@ -536,8 +492,108 @@
         setTimeout(() => location.reload(), 600);
       } catch (e) { toast('Request failed: ' + e, 'error'); }
       finally { box.querySelectorAll('button').forEach(b => b.disabled = false); }
-    });
+    }
   });
+  // ---- lead queue: filter, sort and page without reloading the dashboard.
+  //
+  // The form works on its own (plain GET). This only swaps the results table in, keeps the
+  // URL in step so a view stays shareable and the back button works, and cancels a request
+  // that a newer keystroke has already superseded.
+  const form = document.getElementById('leadFilters');
+  const results = document.getElementById('leadResults');
+  if (form && results && window.fetch && window.history && window.AbortController) {
+    let inFlight = null;
+
+    const queryString = (extra) => {
+      const params = new URLSearchParams(new FormData(form));
+      for (const [k, v] of Object.entries(extra || {})) {
+        params.delete(k);
+        if (v !== null && v !== undefined) params.set(k, v);
+      }
+      for (const [k, v] of [...params.entries()]) if (v === '') params.delete(k);
+      if (params.get('page') === '1') params.delete('page');
+      return params.toString();
+    };
+
+    const load = async (extra, push) => {
+      const qs = queryString(extra);
+      if (inFlight) inFlight.abort();            // a newer filter wins over an older one
+      inFlight = new AbortController();
+      results.dataset.loading = '1';
+      try {
+        const r = await fetch('/ml?' + (qs ? qs + '&' : '') + 'partial=1',
+                              {signal: inFlight.signal, headers: {'X-Requested-With': 'fetch'}});
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        results.innerHTML = await r.text();
+        const url = qs ? '/ml?' + qs : '/ml';
+        push ? history.pushState({qs}, '', url) : history.replaceState({qs}, '', url);
+        const count = results.querySelector('[data-total]');
+        const chip = document.getElementById('leadCount');
+        if (chip && count) chip.textContent = count.dataset.total;
+        syncClear();
+      } catch (e) {
+        if (e.name !== 'AbortError') toast('Could not load leads: ' + e.message, 'error');
+      } finally {
+        if (inFlight && !inFlight.signal.aborted) { inFlight = null; }
+        results.dataset.loading = '0';
+      }
+    };
+
+    const syncClear = () => {
+      const p = new URLSearchParams(queryString({}));
+      const active = ['q', 'priority', 'host_id', 'verdict', 'tactic'].some(k => p.has(k));
+      form.querySelectorAll('[data-lead-clear]').forEach(b => { b.hidden = !active; });
+    };
+
+    let typing;
+    form.addEventListener('input', (ev) => {
+      if (ev.target.type === 'search' || ev.target.type === 'text') {
+        clearTimeout(typing);                    // one request per pause, not per keystroke
+        typing = setTimeout(() => load({page: 1}, false), 300);
+      }
+    });
+    form.addEventListener('change', (ev) => {
+      if (ev.target.type === 'search' || ev.target.type === 'text') return;
+      clearTimeout(typing);
+      load({page: 1}, true);
+    });
+    form.addEventListener('submit', (ev) => { ev.preventDefault(); load({page: 1}, true); });
+
+    document.addEventListener('click', (ev) => {
+      const pager = ev.target.closest('[data-lead-page]');
+      if (pager && results.contains(pager)) {
+        ev.preventDefault();
+        if (pager.closest('.page-item').classList.contains('disabled')) return;
+        load({page: pager.dataset.leadPage}, true);
+        document.getElementById('leadQueue').scrollIntoView({behavior: 'smooth', block: 'start'});
+        return;
+      }
+      if (ev.target.closest('[data-lead-clear]')) {
+        ev.preventDefault();
+        form.reset();
+        form.querySelectorAll('input[name="priority"]').forEach(c => c.checked = false);
+        form.querySelector('[name="q"]').value = '';
+        form.querySelectorAll('select').forEach(sel => {
+          if (sel.name !== 'per_page' && sel.name !== 'sort') sel.selectedIndex = 0;
+        });
+        load({page: 1}, true);
+      }
+    });
+
+    window.addEventListener('popstate', () => {
+      // Re-sync the controls from the URL, then render that view.
+      const params = new URLSearchParams(location.search);
+      form.querySelector('[name="q"]').value = params.get('q') || '';
+      const priorities = params.getAll('priority');
+      form.querySelectorAll('input[name="priority"]').forEach(c => { c.checked = priorities.includes(c.value); });
+      form.querySelectorAll('select').forEach(sel => {
+        const v = params.get(sel.name);
+        sel.value = v === null ? sel.options[0].value : v;
+      });
+      load({page: params.get('page') || 1}, false);
+    });
+  }
+
   const riskBtn = document.getElementById('mlRiskBtn');
   if (riskBtn) {
     const label = riskBtn.innerHTML;

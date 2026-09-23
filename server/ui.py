@@ -107,11 +107,238 @@ def enrollment_server_url(request):
 templates = None
 
 
+# --------------------------------------------------------------------------- lead queue
+#
+# The behavioural-lead queue used to render a fixed 60 rows with an evidence panel each, and
+# computed its own headline counts from that slice - so the numbers described the slice, not
+# the estate. Filtering, sorting and paging are done in SQL instead: the page renders one
+# page of rows, and the counts come from aggregates over every lead.
+
+LEADS_PER_PAGE = (25, 50, 100)
+
+LEAD_SORTS = {
+    # label shown in the control -> ORDER BY. Unscored leads sort last rather than as zero.
+    "likelihood": ("Threat likelihood",
+                   "d.confidence_score IS NULL, d.confidence_score DESC, "
+                   "d.anomaly_score DESC, d.id DESC"),
+    "rarity": ("Rarity", "d.anomaly_score IS NULL, d.anomaly_score DESC, d.id DESC"),
+    "newest": ("Most recent",
+               "COALESCE(d.last_seen_utc, d.detected_at_utc) DESC, d.id DESC"),
+    "sightings": ("Most sightings", "COALESCE(d.hit_count, 1) DESC, d.id DESC"),
+}
+
+LEAD_VERDICTS = {"unreviewed": "Not reviewed", "confirmed": "Confirmed threat",
+                 "benign": "Dismissed as benign"}
+
+# The top tactic of a lead, as stored by suggest_tactics(). Used for the filter and its
+# options, so both read the same field.
+_TOP_TACTIC = "json_extract(d.suggested_tactics, '$.suggestions[0].tactic')"
+
+
+def _lead_filters(params: dict) -> tuple[str, list]:
+    """WHERE clauses for the queue, from already-validated filter values."""
+    from server.engine import ml_vocabulary as vocab
+
+    where = ["d.rule_type = 'ml_anomaly'"]
+    args: list = []
+    if params.get("q"):
+        # One LIKE over the finding's stored artefact JSON (process name, command line,
+        # image path, account) plus the host name: one box, no syntax to learn.
+        needle = f"%{params['q'].lower()}%"
+        where.append("(LOWER(COALESCE(d.summary,'')) LIKE ? "
+                     "OR LOWER(COALESCE(h.hostname,'')) LIKE ? "
+                     "OR LOWER(COALESCE(d.rule_name,'')) LIKE ?)")
+        args += [needle, needle, needle]
+    if params.get("priority"):
+        sql, sql_args = vocab.priority_sql(params["priority"])
+        if sql:
+            where.append(f"({sql})")
+            args += sql_args
+    if params.get("host_id") is not None:
+        where.append("d.host_id = ?")
+        args.append(params["host_id"])
+    verdict = params.get("verdict")
+    if verdict == "unreviewed":
+        where.append("f.verdict IS NULL")
+    elif verdict in ("confirmed", "benign"):
+        where.append("f.verdict = ?")
+        args.append(verdict)
+    tactic = params.get("tactic")
+    if tactic == "any":
+        where.append(f"{_TOP_TACTIC} IS NOT NULL")
+    elif tactic == "none":
+        where.append(f"{_TOP_TACTIC} IS NULL")
+    elif tactic:
+        where.append(f"{_TOP_TACTIC} = ?")
+        args.append(tactic)
+    return " AND ".join(where), args
+
+
+def read_lead_params(request) -> dict:
+    """Validate the query string. Anything unrecognised falls back to a default, so a
+    hand-edited or stale URL renders the queue instead of an error."""
+    get = request.query_params
+    try:
+        page = max(1, int(get.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(get.get("per_page", LEADS_PER_PAGE[0]))
+    except (TypeError, ValueError):
+        per_page = LEADS_PER_PAGE[0]
+    if per_page not in LEADS_PER_PAGE:
+        per_page = LEADS_PER_PAGE[0]
+    host_id = get.get("host_id")
+    try:
+        host_id = int(host_id) if host_id not in (None, "", "any") else None
+    except (TypeError, ValueError):
+        host_id = None
+    verdict = get.get("verdict")
+    tactic = (get.get("tactic") or "").strip()
+    return {
+        "q": (get.get("q") or "").strip()[:200],
+        "priority": [p for p in get.getlist("priority") if p in ("P1", "P2", "P3", "P4")],
+        "host_id": host_id,
+        "verdict": verdict if verdict in LEAD_VERDICTS else None,
+        "tactic": tactic if tactic else None,
+        "sort": get.get("sort") if get.get("sort") in LEAD_SORTS else "likelihood",
+        "page": page,
+        "per_page": per_page,
+    }
+
+
+def lead_page(conn, params: dict) -> dict:
+    """One page of behavioural leads, plus what the controls need to render themselves."""
+    from server.engine import ml_triage
+    from server.engine import ml_vocabulary as vocab
+
+    where, args = _lead_filters(params)
+    joins = ("FROM detections d LEFT JOIN hosts h ON h.id = d.host_id "
+             "LEFT JOIN ml_feedback f ON f.detection_id = d.id")
+    total = conn.execute(f"SELECT COUNT(*) {joins} WHERE {where}", args).fetchone()[0]
+
+    per_page = params["per_page"]
+    pages = max(1, -(-total // per_page))
+    page = min(params["page"], pages)
+    offset = (page - 1) * per_page
+
+    rows = conn.execute(
+        f"""SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
+                   d.detected_at_utc, d.anomaly_score, d.confidence_score,
+                   d.ml_explanation, d.suggested_tactics,
+                   COALESCE(d.hit_count, 1) AS hit_count, d.last_seen_utc,
+                   f.verdict AS analyst_verdict, f.recorded_at_utc AS verdict_at
+            {joins} WHERE {where}
+            ORDER BY {LEAD_SORTS[params['sort']][1]} LIMIT ? OFFSET ?""",
+        args + [per_page, offset]).fetchall()
+
+    leads = []
+    for row in rows:
+        item = dict(row)
+        for field in ("ml_explanation", "suggested_tactics", "summary"):
+            try:
+                item[field] = json.loads(item[field]) if item[field] else {}
+            except (json.JSONDecodeError, TypeError):
+                item[field] = {}
+            if not isinstance(item[field], dict):
+                item[field] = {}
+        item["confidence_band"] = ml_triage.confidence_band(item.get("confidence_score"))
+        item["process"] = (item["summary"].get("name")
+                           or (item.get("rule_name") or "").replace("ML Anomaly: ", ""))
+        item["indicators"] = vocab.indicators(item["ml_explanation"])
+        item["likelihood"] = vocab.likelihood(item.get("confidence_score"))
+        item["rarity"] = vocab.rarity(item.get("anomaly_score"))
+        item["priority"] = vocab.priority(item.get("confidence_score"),
+                                          item.get("anomaly_score"))
+        item["tactics"] = [
+            vocab.tactic(t.get("tactic")) | {"pct": round(float(t.get("probability") or 0) * 100)}
+            for t in (item["suggested_tactics"].get("suggestions") or []) if isinstance(t, dict)]
+        leads.append(item)
+
+    hosts = [{"id": r[0], "hostname": r[1] or f"host {r[0]}", "leads": r[2]}
+             for r in conn.execute(
+                 """SELECT d.host_id, h.hostname, COUNT(*) FROM detections d
+                    LEFT JOIN hosts h ON h.id = d.host_id
+                    WHERE d.rule_type='ml_anomaly' GROUP BY d.host_id, h.hostname
+                    ORDER BY COUNT(*) DESC""")]
+    tactics = [{"value": r[0], "name": vocab.tactic(r[0])["name"], "leads": r[1]}
+               for r in conn.execute(
+                   f"""SELECT {_TOP_TACTIC} AS t, COUNT(*) FROM detections d
+                       WHERE d.rule_type='ml_anomaly' AND t IS NOT NULL
+                       GROUP BY t ORDER BY COUNT(*) DESC""")]
+
+    active = bool(params["q"] or params["priority"] or params["host_id"] is not None
+                  or params["verdict"] or params["tactic"])
+    return {
+        "leads": leads, "total": total, "page": page, "pages": pages,
+        "per_page": per_page, "sort": params["sort"],
+        "first": offset + 1 if total else 0, "last": offset + len(leads),
+        "filters": params, "filters_active": active,
+        "options": {"hosts": hosts, "tactics": tactics, "sorts": LEAD_SORTS,
+                    "verdicts": LEAD_VERDICTS, "per_page": LEADS_PER_PAGE},
+    }
+
+
+def lead_totals(conn) -> dict:
+    """Headline counts over EVERY lead, not the page being shown."""
+    row = conn.execute(
+        f"""SELECT COUNT(*),
+                   SUM(CASE WHEN d.confidence_score >= 0.5 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN {_TOP_TACTIC} IS NOT NULL THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN f.verdict IS NOT NULL THEN 1 ELSE 0 END)
+            FROM detections d LEFT JOIN ml_feedback f ON f.detection_id = d.id
+            WHERE d.rule_type='ml_anomaly'""").fetchone()
+    return {"leads": row[0] or 0, "high": row[1] or 0, "with_tactic": row[2] or 0,
+            "reviewed": row[3] or 0}
+
+
+def lead_query(queue: dict, **overrides) -> str:
+    """The queue's current filters as a query string, with `overrides` applied.
+
+    Every pager link carries the whole filter state, so a page is a shareable URL and the
+    back button works - the JavaScript below only avoids the round trip, it is not what
+    makes navigation work.
+    """
+    from urllib.parse import urlencode
+
+    values = dict(queue["filters"])
+    values.update(overrides)
+    pairs = []
+    for key in ("q", "priority", "host_id", "verdict", "tactic", "sort", "per_page", "page"):
+        value = values.get(key)
+        if value in (None, "", []):
+            continue
+        if key == "page" and value == 1:
+            continue
+        if isinstance(value, list):
+            pairs += [(key, v) for v in value]
+        else:
+            pairs.append((key, value))
+    return urlencode(pairs)
+
+
+def lead_page_numbers(queue: dict, window: int = 2) -> list:
+    """Page numbers to show, with None marking a gap: 1 … 4 5 [6] 7 8 … 20."""
+    pages, current = queue["pages"], queue["page"]
+    if pages <= 7 + window:
+        return list(range(1, pages + 1))
+    wanted = {1, pages}
+    wanted.update(n for n in range(current - window, current + window + 1) if 1 <= n <= pages)
+    out: list = []
+    for n in sorted(wanted):
+        if out and n - out[-1] > 1:
+            out.append(None)
+        out.append(n)
+    return out
+
+
 def _get_templates():
     global templates
     if templates is None:
         from fastapi.templating import Jinja2Templates
         templates = Jinja2Templates(directory="server/templates")
+        templates.env.filters["lead_query"] = lead_query
+        templates.env.filters["lead_page_numbers"] = lead_page_numbers
     return templates
 
 
@@ -176,48 +403,23 @@ def register_ui(target_app):
         Degrades rather than fails when the optional ML stack is absent - the template
         renders an explanatory banner and the rest of the dashboard is unaffected.
         """
-        from server.engine import ml_registry, ml_triage
+        from server.engine import ml_registry
         from server.engine import ml_vocabulary as vocab
+
+        # One page of the queue, filtered and sorted in SQL (see lead_page). The controls
+        # submit as a plain GET form; `partial=1` renders just the results, which is what
+        # the page fetches when a filter changes - so typing re-renders a table, not a
+        # dashboard, and none of the work below is done for a keystroke.
+        params = read_lead_params(request)
+        queue = lead_page(conn, params)
+        if request.query_params.get("partial") == "1":
+            conn.close()
+            return tpl.TemplateResponse(request, "ml_leads.html", {"queue": queue})
 
         try:
             ml = ml_registry.describe(conn)
         except Exception as exc:                     # noqa: BLE001
             ml = {"available": False, "reason": f"{type(exc).__name__}: {exc}", "models": []}
-
-        # Leads are worked in threat-likelihood order (how much the process resembles known
-        # attack activity), then by rarity. Unscored leads sort last rather than as zero.
-        anomalies = []
-        for row in conn.execute(
-            """SELECT d.id, d.host_id, h.hostname, d.rule_name, d.severity, d.summary,
-                      d.detected_at_utc, d.anomaly_score, d.confidence_score,
-                      d.ml_explanation, d.suggested_tactics,
-                      COALESCE(d.hit_count, 1) AS hit_count, d.last_seen_utc,
-                      f.verdict AS analyst_verdict, f.recorded_at_utc AS verdict_at
-               FROM detections d LEFT JOIN hosts h ON h.id = d.host_id
-               LEFT JOIN ml_feedback f ON f.detection_id = d.id
-               WHERE d.rule_type = 'ml_anomaly'
-               ORDER BY d.confidence_score IS NULL, d.confidence_score DESC,
-                        d.anomaly_score DESC, d.id DESC LIMIT 60"""):
-            item = dict(row)
-            for field in ("ml_explanation", "suggested_tactics", "summary"):
-                try:
-                    item[field] = json.loads(item[field]) if item[field] else {}
-                except (json.JSONDecodeError, TypeError):
-                    item[field] = {}
-                if not isinstance(item[field], dict):
-                    item[field] = {}
-            item["confidence_band"] = ml_triage.confidence_band(item.get("confidence_score"))
-            item["process"] = (item["summary"].get("name")
-                               or (item.get("rule_name") or "").replace("ML Anomaly: ", ""))
-            item["indicators"] = vocab.indicators(item["ml_explanation"])
-            item["likelihood"] = vocab.likelihood(item.get("confidence_score"))
-            item["rarity"] = vocab.rarity(item.get("anomaly_score"))
-            item["priority"] = vocab.priority(item.get("confidence_score"),
-                                              item.get("anomaly_score"))
-            item["tactics"] = [
-                vocab.tactic(t.get("tactic")) | {"pct": round(float(t.get("probability") or 0) * 100)}
-                for t in (item["suggested_tactics"].get("suggestions") or []) if isinstance(t, dict)]
-            anomalies.append(item)
 
         risk = []
         for row in conn.execute(
@@ -252,10 +454,9 @@ def register_ui(target_app):
         engines = vocab.engine_cards(ml)
         from server.engine import ml_ops
         ops = ml_ops.ops_view(conn, ml.get("models") or [])
+        totals = lead_totals(conn)
         kpis = {
-            "leads": len(anomalies),
-            "high": sum(1 for a in anomalies if a["likelihood"] and a["likelihood"]["raw"] >= 0.5),
-            "with_tactic": sum(1 for a in anomalies if a["tactics"]),
+            **totals,
             "hosts_elevated": sum(1 for r in risk if r.get("tier") in ("high", "critical")),
             "hosts_scored": len(risk),
             "engines_online": sum(1 for e in engines if e["status"].startswith("Online")),
@@ -263,8 +464,8 @@ def register_ui(target_app):
         }
         conn.close()
         return tpl.TemplateResponse(request, "ml_analytics.html", {
-            "ml": ml, "anomalies": anomalies, "risk": risk, "drift": drift, "page": "ml",
-            "engines": engines, "kpis": kpis, "ops": ops,
+            "ml": ml, "risk": risk, "drift": drift, "page": "ml",
+            "engines": engines, "kpis": kpis, "ops": ops, "queue": queue,
         })
 
     @target_app.get("/endpoints", response_class=HTMLResponse)

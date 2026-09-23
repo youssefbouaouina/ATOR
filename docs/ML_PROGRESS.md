@@ -636,6 +636,22 @@ stated subject, not a detour from it.
 
 ## Changelog
 
+- **2026-09-23** — **Threat Hunting queue: search, filters, sorting, pagination.** The queue
+  rendered a fixed 60 rows with an evidence panel each and computed its headline counts from
+  that slice, so the numbers described the slice rather than the estate. Filtering, sorting
+  and paging now happen in SQL (`server/ui.py: lead_page`), the page renders 25 rows by
+  default, and the counts come from aggregates over every lead. Search covers the stored
+  artefact JSON (process, command line, path, account) plus the host name; filters are
+  priority chips, host, analyst verdict and ATT&CK tactic; sort by likelihood, rarity,
+  recency or sightings. The controls are a plain GET form - every view is a shareable URL and
+  the back button works - upgraded by script to fetch `?partial=1`, which re-renders only the
+  table (~0.1 s), so typing never reloads the dashboard. Priority chips and the P1-P4 badges
+  share their thresholds through `ml_vocabulary.PRIORITY_FLOORS`/`priority_sql`, checked row
+  by row in `tests/test_ml_leads.py` (42 tests). Also: the verdict buttons became delegated
+  (per-element listeners died on the first filter change) and the clear button is always
+  rendered (it lives outside the swapped region, so it could never appear otherwise).
+  Suite: `677 passed, 1 skipped, 0 failed`.
+
 - **2026-09-22** — **Phase 10: weekly MLOps pipeline.** Retrieve (OTRF fetch, checksum-pinned
   admission: new captures wait for review because labels need per-tool signatures), snapshot
   the live DB, exclude live rows that must not be assumed benign (cooling-off, rule hits and

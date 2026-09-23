@@ -1,0 +1,167 @@
+{#
+  One page of the behavioural-lead queue: the table and its pager, nothing else.
+
+  Rendered inside ml_analytics.html on a normal load, and returned on its own for
+  `?partial=1` when a filter changes - so a keystroke re-renders this table instead of the
+  whole dashboard, and the filter controls (which live in the page, not here) keep focus.
+#}
+  <div class="card-body p-0">
+    <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 align-middle">
+      <thead><tr>
+        <th>Priority</th><th>Host</th><th>Process</th><th>Threat likelihood</th>
+        <th>Rarity</th><th>Likely ATT&amp;CK tactic</th><th>Why it was flagged</th><th>Seen</th>
+      </tr></thead>
+      <tbody>
+      {% for a in queue.leads %}
+        <tr class="lead-row" data-bs-toggle="collapse" data-bs-target="#lead{{ a.id }}"
+            aria-expanded="false" aria-controls="lead{{ a.id }}">
+          <td><span class="sev-chip {{ a.priority.css }}" title="{{ a.priority.title }}">{{ a.priority.label }}</span></td>
+          <td class="small">{{ a.hostname or ('host ' ~ a.host_id) }}</td>
+          <td><span class="mono small fw-semibold">{{ a.process }}</span>
+            {% if a.analyst_verdict == 'confirmed' %}<span class="verdict-tag verdict-confirmed ms-1" title="An analyst confirmed this lead as a threat">Confirmed</span>
+            {% elif a.analyst_verdict == 'benign' %}<span class="verdict-tag verdict-benign ms-1" title="An analyst dismissed this lead as benign">Dismissed</span>{% endif %}
+            {% if a.summary.exe_path %}<div class="text-muted" style="font-size:.7rem;max-width:220px"
+                 title="{{ a.summary.exe_path }}">{{ a.summary.exe_path|truncate(38, True) }}</div>{% endif %}</td>
+          <td>
+            {% if a.likelihood %}
+              <span class="risk-tag {{ a.likelihood.css }}"
+                    title="Resemblance to known attack activity (model confidence {{ '%.2f'|format(a.likelihood.raw) }})">
+                {{ a.likelihood.level }} &middot; {{ a.likelihood.pct }}%</span>
+            {% else %}<span class="text-muted small" title="not scored yet">&mdash;</span>{% endif %}
+          </td>
+          <td>
+            {% if a.rarity %}
+              <span class="small fw-semibold" title="{{ a.rarity.sentence }} (anomaly score {{ '%.4f'|format(a.rarity.raw) }})">
+                {{ a.rarity.text }}</span>
+            {% else %}<span class="text-muted">&mdash;</span>{% endif %}
+          </td>
+          <td class="small">
+            {% for t in a.tactics %}
+              <span class="badge bg-secondary" title="Advisory: {{ t.pct }}% model probability{% if t.id %} &middot; MITRE {{ t.id }}{% endif %}">
+                {{ t.name }}{% if t.id %} <span class="opacity-75">{{ t.id }}</span>{% endif %}</span>
+            {% else %}<span class="text-muted">&mdash;</span>{% endfor %}
+          </td>
+          <td>
+            {% for ind in a.indicators[:2] %}
+              <span class="ind-chip" title="{{ ind.category }} &middot; {{ ind.strength }} &middot; {{ ind.feature }}">
+                <i class="bi {{ ind.icon }}"></i>{{ ind.text }}</span>
+            {% else %}<span class="text-muted small">&mdash;</span>{% endfor %}
+            {% if a.indicators|length > 2 %}<span class="text-muted small">+{{ a.indicators|length - 2 }} more</span>{% endif %}
+          </td>
+          <td class="small text-nowrap">
+            {% if a.hit_count and a.hit_count > 1 %}
+              <span class="chip-count" title="flagged on {{ a.hit_count }} sweeps">&times;{{ a.hit_count }}</span>
+            {% endif %}
+            <div class="mono text-muted" style="font-size:.7rem">{{ ((a.last_seen_utc or a.detected_at_utc) or '')[:16]|replace('T',' ') }}</div>
+          </td>
+        </tr>
+        <tr class="collapse" id="lead{{ a.id }}">
+          <td colspan="8" class="bg-light">
+            <div class="row g-3 p-2 evidence">
+              <div class="col-lg-5">
+                <div class="section-label mb-2">Evidence</div>
+                <dl class="row mb-0 small">
+                  <dt class="col-4">Priority</dt><dd class="col-8">{{ a.priority.title }}</dd>
+                  <dt class="col-4">Severity</dt><dd class="col-8"><span class="sev-chip badge-{{ a.severity }}">{{ a.severity|upper }}</span>
+                    <span class="text-muted small">set by rarity when first detected</span></dd>
+                  <dt class="col-4">Process</dt><dd class="col-8 mono">{{ a.process }}{% if a.summary.pid %} (PID {{ a.summary.pid }}){% endif %}</dd>
+                  <dt class="col-4">Parent PID</dt><dd class="col-8 mono">{{ a.summary.ppid or '—' }}</dd>
+                  <dt class="col-4">Account</dt><dd class="col-8 mono">{{ a.summary.username or '—' }}</dd>
+                  <dt class="col-4">Image path</dt><dd class="col-8 mono text-break">{{ a.summary.exe_path or '—' }}</dd>
+                  <dt class="col-4">First seen</dt><dd class="col-8 mono">{{ (a.detected_at_utc or '')[:19]|replace('T',' ') }} UTC</dd>
+                  <dt class="col-4">Last seen</dt><dd class="col-8 mono">{{ ((a.last_seen_utc or a.detected_at_utc) or '')[:19]|replace('T',' ') }} UTC
+                    {% if a.hit_count and a.hit_count > 1 %}<span class="text-muted">&middot; flagged on {{ a.hit_count }} sweeps</span>{% endif %}</dd>
+                </dl>
+                <div class="section-label mt-2 mb-1">Command line</div>
+                {% if a.summary.cmdline %}<pre class="cmdline">{{ a.summary.cmdline }}</pre>
+                {% else %}<div class="small text-muted">Not captured &mdash; the agent could not read it (protected process or agent not elevated).</div>{% endif %}
+                <div class="section-label mt-3 mb-1">Analyst verdict</div>
+                <div class="d-flex flex-wrap align-items-center gap-2 verdict-box" data-detection="{{ a.id }}">
+                  <button class="btn btn-sm {{ 'btn-danger' if a.analyst_verdict == 'confirmed' else 'btn-outline-danger' }} verdict-btn"
+                          data-verdict="{{ 'clear' if a.analyst_verdict == 'confirmed' else 'confirmed' }}">
+                    <i class="bi bi-shield-fill-exclamation me-1"></i>Confirmed threat</button>
+                  <button class="btn btn-sm {{ 'btn-secondary' if a.analyst_verdict == 'benign' else 'btn-outline-secondary' }} verdict-btn"
+                          data-verdict="{{ 'clear' if a.analyst_verdict == 'benign' else 'benign' }}">
+                    <i class="bi bi-check2-circle me-1"></i>Benign &middot; false positive</button>
+                  {% if a.analyst_verdict %}<span class="small text-muted">recorded {{ (a.verdict_at or '')[:16]|replace('T',' ') }} &middot; click again to clear</span>{% endif %}
+                </div>
+                <div class="text-muted mt-1" style="font-size:.72rem">
+                  Your verdict trains next week's model: a dismissed lead becomes part of what
+                  &ldquo;normal&rdquo; looks like, and every future model must keep catching confirmed threats.
+                </div>
+              </div>
+              <div class="col-lg-7">
+                <div class="section-label mb-2">Why it was flagged</div>
+                {% for ind in a.indicators %}
+                  <div class="d-flex align-items-center gap-2 small mb-1">
+                    {% if ind.bars %}
+                      <span class="ind-bars" title="{{ ind.strength }}">
+                        {% for i in range(3) %}<span class="{{ 'on' if i < ind.bars }}"></span>{% endfor %}</span>
+                    {% else %}
+                      <span class="badge bg-light text-dark border" style="font-size:.65rem">{{ ind.strength }}</span>
+                    {% endif %}
+                    <i class="bi {{ ind.icon }} text-muted"></i>
+                    <span>{{ ind.text }}</span>
+                    <span class="text-muted" style="font-size:.7rem">{{ ind.category }}</span>
+                  </div>
+                {% else %}
+                  <div class="small text-muted">No indicators recorded for this lead.</div>
+                {% endfor %}
+                <div class="small text-muted mt-2">
+                  <i class="bi bi-info-circle me-1"></i>Indicators describe how this process differs from
+                  normal activity. They explain the lead; they do not prove intent.
+                </div>
+                <div class="text-muted mt-1" style="font-size:.7rem">
+                  technical: anomaly score {{ '%.4f'|format(a.anomaly_score or 0) }}{% if a.confidence_score is not none %}
+                  &middot; confidence {{ '%.2f'|format(a.confidence_score) }}{% endif %}
+                  {% if a.ml_explanation.tier %}&middot; model tier {{ a.ml_explanation.tier|upper }}{% endif %}
+                  &middot; detection #{{ a.id }}
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="8" class="p-0">
+          <div class="empty-hint"><i class="bi bi-search d-block mb-1" style="font-size:1.4rem"></i>
+            {% if queue.filters_active %}
+              No lead matches these filters. <button type="button" class="btn btn-sm btn-link p-0 align-baseline" data-lead-clear>Clear them</button>
+              to see all {{ queue.options.hosts|sum(attribute='leads') }} leads.
+            {% else %}
+              No behavioural leads yet. Press <b>Run hunt now</b>, or wait for the next engine cycle.
+            {% endif %}</div>
+        </td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 px-3 py-2 border-top lead-pager">
+    <span class="small text-muted" data-total="{{ queue.total }}">
+      {% if queue.total %}Showing <b>{{ queue.first }}&ndash;{{ queue.last }}</b> of
+        <b>{{ queue.total }}</b> lead{{ '' if queue.total == 1 else 's' }}{% if queue.filters_active %} matching{% endif %}
+      {% else %}No leads to show{% endif %}
+    </span>
+    {% if queue.pages > 1 %}
+      <nav aria-label="Lead pages">
+        <ul class="pagination pagination-sm mb-0">
+          <li class="page-item {{ 'disabled' if queue.page == 1 }}">
+            <a class="page-link" href="?{{ queue|lead_query(page=queue.page - 1) }}"
+               data-lead-page="{{ queue.page - 1 }}" aria-label="Previous">&laquo;</a></li>
+          {% for n in queue|lead_page_numbers %}
+            {% if n %}
+              <li class="page-item {{ 'active' if n == queue.page }}">
+                <a class="page-link" href="?{{ queue|lead_query(page=n) }}" data-lead-page="{{ n }}">{{ n }}</a></li>
+            {% else %}
+              <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+            {% endif %}
+          {% endfor %}
+          <li class="page-item {{ 'disabled' if queue.page == queue.pages }}">
+            <a class="page-link" href="?{{ queue|lead_query(page=queue.page + 1) }}"
+               data-lead-page="{{ queue.page + 1 }}" aria-label="Next">&raquo;</a></li>
+        </ul>
+      </nav>
+    {% endif %}
+  </div>

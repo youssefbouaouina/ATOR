@@ -301,6 +301,22 @@ def likelihood(confidence) -> dict | None:
     return {"level": level, "pct": round(c * 100), "css": css, "raw": c}
 
 
+# Priority thresholds, in one place: priority() labels a lead with them and priority_sql()
+# filters on them, so the chips in the queue and the badges on the rows cannot disagree.
+PRIORITY_FLOORS = ((0.8, "P1"), (0.5, "P2"), (0.2, "P3"))
+UNSCORED_BUT_RARE = 0.999
+PRIORITY_LABELS = {
+    "P1": {"label": "P1", "css": "badge-critical",
+           "title": "P1 - strongly resembles known attack activity; investigate first"},
+    "P2": {"label": "P2", "css": "badge-high",
+           "title": "P2 - likely malicious; investigate soon"},
+    "P3": {"label": "P3", "css": "badge-medium",
+           "title": "P3 - some resemblance to attack activity; review when time allows"},
+    "P4": {"label": "P4", "css": "badge-low",
+           "title": "P4 - unusual but unlike known attacks; usually legitimate software"},
+}
+
+
 def priority(confidence, anomaly_score) -> dict:
     """Triage priority P1-P4, from the signal the queue is sorted by.
 
@@ -314,22 +330,48 @@ def priority(confidence, anomaly_score) -> dict:
     rare = rarity(anomaly_score)
     if like is not None:
         c = like["raw"]
-        if c >= 0.8:
-            return {"label": "P1", "css": "badge-critical",
-                    "title": "P1 - strongly resembles known attack activity; investigate first"}
-        if c >= 0.5:
-            return {"label": "P2", "css": "badge-high",
-                    "title": "P2 - likely malicious; investigate soon"}
-        if c >= 0.2:
-            return {"label": "P3", "css": "badge-medium",
-                    "title": "P3 - some resemblance to attack activity; review when time allows"}
-        return {"label": "P4", "css": "badge-low",
-                "title": "P4 - unusual but unlike known attacks; usually legitimate software"}
-    if rare is not None and rare["raw"] >= 0.999:
-        return {"label": "P3", "css": "badge-medium",
-                "title": "P3 - extremely rare behaviour, not yet scored for threat likelihood"}
-    return {"label": "P4", "css": "badge-low",
-            "title": "P4 - not yet scored for threat likelihood"}
+        for floor, label in PRIORITY_FLOORS:
+            if c >= floor:
+                return dict(PRIORITY_LABELS[label])
+        return dict(PRIORITY_LABELS["P4"])
+    if rare is not None and rare["raw"] >= UNSCORED_BUT_RARE:
+        return dict(PRIORITY_LABELS["P3"]) | {
+            "title": "P3 - extremely rare behaviour, not yet scored for threat likelihood"}
+    return dict(PRIORITY_LABELS["P4"]) | {
+        "title": "P4 - not yet scored for threat likelihood"}
+
+
+def priority_sql(labels, confidence="d.confidence_score", anomaly="d.anomaly_score"):
+    """SQL predicate selecting the leads `priority()` would label with any of `labels`.
+
+    Built from the same constants as `priority()`, so a filter chip can never select a
+    different set from the badge it shows. Returns (sql, params); "" when nothing is
+    selected. tests/test_ml_leads.py checks the two agree row by row.
+    """
+    floors = {label: floor for floor, label in PRIORITY_FLOORS}
+    clauses, params = [], []
+    for label in labels:
+        if label not in PRIORITY_LABELS:
+            continue
+        floor = floors.get(label)
+        if floor is not None:                        # scored, and above this label's floor
+            upper = min((f for f in floors.values() if f > floor), default=None)
+            clause = f"({confidence} IS NOT NULL AND {confidence} >= ?"
+            params.append(floor)
+            if upper is not None:
+                clause += f" AND {confidence} < ?"
+                params.append(upper)
+            clauses.append(clause + ")")
+        if label == "P3":                            # unscored but extremely rare
+            clauses.append(f"({confidence} IS NULL AND {anomaly} >= ?)")
+            params.append(UNSCORED_BUT_RARE)
+        if label == "P4":                            # scored below every floor, or unscored
+            lowest = min(floors.values())
+            clauses.append(f"({confidence} IS NOT NULL AND {confidence} < ?)")
+            params.append(lowest)
+            clauses.append(f"({confidence} IS NULL AND ({anomaly} IS NULL OR {anomaly} < ?))")
+            params.append(UNSCORED_BUT_RARE)
+    return (" OR ".join(clauses), params) if clauses else ("", [])
 
 
 def rarity(anomaly_score) -> dict | None:

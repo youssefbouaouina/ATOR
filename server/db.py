@@ -579,6 +579,9 @@ CREATE TABLE IF NOT EXISTS ml_feedback (
 ML_DETECTION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS ix_det_confidence ON detections(confidence_score)",
     "CREATE INDEX IF NOT EXISTS ix_det_anomaly ON detections(anomaly_score)",
+    # The Threat Hunting queue filters on rule_type and orders by these two scores; this
+    # covers that path so the page stays fast as findings accumulate.
+    "CREATE INDEX IF NOT EXISTS ix_det_ml_queue ON detections(rule_type, confidence_score DESC, anomaly_score DESC)",
 )
 
 # Columns added to the existing raw_processes table.
